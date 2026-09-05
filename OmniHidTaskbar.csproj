@@ -1,0 +1,39 @@
+﻿<Project Sdk=Microsoft.NET.Sdk>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>OmniHidTaskbar</AssemblyName>
+    <RootNamespace>OmniHidTaskbar</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <OutputPath>bin\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include=System />
+    <Reference Include=System.Data />
+    <Reference Include=System.Drawing />
+    <Reference Include=System.Windows.Forms />
+    <Reference Include=System.Xml />
+    <Reference Include=Microsoft.CSharp />
+    <Reference Include=System.Core />
+    <Reference Include=WindowsBase />
+    <Reference Include=PresentationCore />
+    <Reference Include=PresentationFramework />
+    <Reference Include=System.Xaml />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include=vendor\omni-hid\src\OmniHid.Core\OmniHid.Core.csproj />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include=settings.json>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

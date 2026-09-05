@@ -1,0 +1,6 @@
+﻿{
+  DisplayStyle: 0,
+  HideWhenDisconnected: true,
+  RunOnStartup: false,
+  PollIntervalSeconds: 15
+}

@@ -1,0 +1,32 @@
+﻿name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build and Verify
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build Applications
+        shell: cmd
+        run: |
+          call build.bat
+
+      - name: Verify Output Binaries
+        shell: pwsh
+        run: |
+          Test-Path bin\OmniHidTaskbar.exe
+          Test-Path bin\OmniHidTaskbarDebug.exe
+          Test-Path bin\OmniHid.Core.dll

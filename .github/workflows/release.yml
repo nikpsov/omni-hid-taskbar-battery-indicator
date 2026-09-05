@@ -1,0 +1,96 @@
+﻿name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 0.0.1)'
+        required: false
+        default: '0.0.1'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build Installer and Portable Packages
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Determine Version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and "${{ github.event.inputs.version }}" -ne "") {
+            $ver = "${{ github.event.inputs.version }}".TrimStart("v")
+          } elseif ($env:GITHUB_REF -like "refs/tags/v*") {
+            $ver = $env:GITHUB_REF.Substring(11)
+          } else {
+            $ver = "0.0.1"
+          }
+          Write-Host "Releasing version: $ver"
+          "VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TAG_NAME=v$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build Applications
+        shell: cmd
+        run: |
+          call build.bat
+
+      - name: Setup Inno Setup Compiler
+        shell: pwsh
+        run: |
+          $isccDir = "C:\Program Files (x86)\Inno Setup 6"
+          if (-not (Test-Path "$isccDir\ISCC.exe")) {
+            Write-Host "Installing Inno Setup via Chocolatey..."
+            choco install innosetup --no-progress
+          }
+          echo "$isccDir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Compile Inno Setup Installer
+        shell: pwsh
+        run: |
+          iscc installer\omni-hid-taskbar-setup.iss "/DMyAppVersion=$($env:VERSION)"
+          New-Item -ItemType Directory -Force -Path Output | Out-Null
+          Move-Item "installer\Output\omni-hid-taskbar-v$($env:VERSION)-setup.exe" "Output\omni-hid-taskbar-v$($env:VERSION)-setup.exe" -Force
+          Write-Host "Created installer: Output\omni-hid-taskbar-v$($env:VERSION)-setup.exe"
+
+      - name: Create Portable Zip
+        shell: pwsh
+        run: |
+          $zipName = "Output\omni-hid-taskbar-v$($env:VERSION)-portable.zip"
+          Compress-Archive -Path bin\OmniHidTaskbar.exe, bin\OmniHidTaskbarDebug.exe, bin\OmniHid.Core.dll, bin\settings.json, README.md, README.ru.md, LICENSE -DestinationPath $zipName -Force
+          Write-Host "Created portable zip: $zipName"
+
+      - name: Generate Checksums
+        shell: pwsh
+        run: |
+          $setupFile = "Output\omni-hid-taskbar-v$($env:VERSION)-setup.exe"
+          $zipFile = "Output\omni-hid-taskbar-v$($env:VERSION)-portable.zip"
+          $hashSetup = (Get-FileHash -Algorithm SHA256 -Path $setupFile).Hash.ToLower()
+          $hashZip = (Get-FileHash -Algorithm SHA256 -Path $zipFile).Hash.ToLower()
+          $lines = @(
+            "$hashSetup  $(Split-Path -Leaf $setupFile)",
+            "$hashZip  $(Split-Path -Leaf $zipFile)"
+          )
+          $lines | Out-File -FilePath Output\checksums.sha256 -Encoding utf8
+          Get-Content Output\checksums.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Output/omni-hid-taskbar-v${{ env.VERSION }}-setup.exe
+            Output/omni-hid-taskbar-v${{ env.VERSION }}-portable.zip
+            Output/checksums.sha256
+          draft: false
+          generate_release_notes: true

@@ -1,0 +1,3 @@
+[submodule "vendor/omni-hid"]
+	path = vendor/omni-hid
+	url = https://github.com/nikpsov/omni-hid.git
