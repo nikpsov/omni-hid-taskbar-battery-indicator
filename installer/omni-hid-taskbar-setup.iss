@@ -1,4 +1,4 @@
-﻿#define MyAppName "OmniHID Taskbar Battery Indicator"
+#define MyAppName "OmniHID Taskbar Battery Indicator"
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.1"
 #endif
