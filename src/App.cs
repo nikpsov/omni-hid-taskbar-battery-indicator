@@ -7,9 +7,9 @@ using OmniHidTaskbar.UI;
 
 [assembly: AssemblyTitle("OmniHID Taskbar Battery Indicator")]
 [assembly: AssemblyDescription("Universal Taskbar & Fluent Flyout Battery Monitor for Gaming Peripherals")]
-[assembly: AssemblyVersion("0.0.3.0")]
-[assembly: AssemblyFileVersion("0.0.3.0")]
-[assembly: AssemblyInformationalVersion("0.0.3")]
+[assembly: AssemblyVersion("0.0.4.0")]
+[assembly: AssemblyFileVersion("0.0.4.0")]
+[assembly: AssemblyInformationalVersion("0.0.4")]
 
 namespace OmniHidTaskbar
 {

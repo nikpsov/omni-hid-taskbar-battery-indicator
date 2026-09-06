@@ -22,15 +22,18 @@ This skill defines the standardized workflow for creating Git commits and releas
    - `style: <description>` (for formatting or styling adjustments)
    - `chore: <description>` (for build scripts, dependencies, or configuration updates)
 
-### Release Commit Title Pattern
-For version releases, use:
+### Release Commit Title Pattern (MANDATORY FOR ALL RELEASES)
+For any version bump or release commit, the commit title **MUST ALWAYS** follow this exact format:
 ```
-feat: release vX.Y.Z - <concise summary of major changes>
+feat: release vX.Y.Z - <concise summary of major changes in lower-case>
 ```
-Example:
-```
-feat: release v0.0.3 - native DWM styling, dynamic system immersive colors, and taskbar button polish
-```
+Examples:
+- `feat: release v0.0.4 - Program Files installation target and robust settings persistence lifecycle`
+- `feat: release v0.0.3 - native DWM styling, dynamic system immersive colors, and taskbar button polish`
+- `feat: release v0.0.2 - device visibility filtering, disconnected device handling, and submodule bump`
+- `feat: release v0.0.1 - initial release (OmniHID taskbar battery indicator & flyout)`
+
+> **CRITICAL**: Do NOT use scoped prefixes like `feat(installer):` or `chore:` when releasing a new version. The prefix MUST be `feat: release vX.Y.Z - ...`.
 
 ### Commit Body Pattern
 For multi-faceted commits or releases, include concise bullet points detailing key changes:

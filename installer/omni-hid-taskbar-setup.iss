@@ -1,6 +1,6 @@
 #define MyAppName "OmniHID Taskbar Battery Indicator"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.0.3"
+  #define MyAppVersion "0.0.4"
 #endif
 #define MyAppPublisher "nikpsov"
 #define MyAppURL "https://github.com/nikpsov/omni-hid-taskbar-battery-indicator"
@@ -14,9 +14,10 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}/issues
 AppUpdatesURL={#MyAppURL}/releases
+ArchitecturesInstallIn64BitMode=x64
 DefaultDirName={autopf}\{#MyAppName}
 DisableProgramGroupPage=yes
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
 OutputDir=Output
 OutputBaseFilename=omni-hid-taskbar-v{#MyAppVersion}-setup
 Compression=lzma2/ultra64
@@ -27,6 +28,10 @@ WizardStyle=modern
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
+[CustomMessages]
+english.RemoveSettingsPrompt=Do you want to delete all configuration and settings files (%APPDATA%\OmniHidTaskbar)?
+russian.RemoveSettingsPrompt=Удалить все файлы настроек и конфигурации программы (%APPDATA%\OmniHidTaskbar)?
+
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "startup"; Description: "Run at Windows startup"; GroupDescription: "Additional tasks:"
@@ -35,10 +40,14 @@ Name: "startup"; Description: "Run at Windows startup"; GroupDescription: "Addit
 Source: "..\bin\OmniHidTaskbar.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\bin\OmniHidTaskbarDebug.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\bin\OmniHid.Core.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\bin\settings.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\bin\settings.json"; DestDir: "{app}"; Flags: onlyifdoesntexist uninsneveruninstall
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.ru.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+
+[UninstallDelete]
+Type: files; Name: "{app}\settings.json"
+Type: files; Name: "{app}\debug.log*"
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -62,4 +71,30 @@ begin
   Exec('taskkill', '/im OmniHidTaskbar.exe /f /t', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec('taskkill', '/im OmniHidTaskbarDebug.exe /f /t', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Result := True;
+end;
+
+function InitializeUninstall(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Exec('taskkill', '/im OmniHidTaskbar.exe /f /t', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('taskkill', '/im OmniHidTaskbarDebug.exe /f /t', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := True;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  AppDataDir: String;
+begin
+  if CurUninstallStep = usPostUninstall then
+  begin
+    AppDataDir := ExpandConstant('{userappdata}\OmniHidTaskbar');
+    if DirExists(AppDataDir) then
+    begin
+      if (not UninstallSilent()) and (MsgBox(CustomMessage('RemoveSettingsPrompt'), mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES) then
+      begin
+        DelTree(AppDataDir, True, True, True);
+      end;
+    end;
+  end;
 end;

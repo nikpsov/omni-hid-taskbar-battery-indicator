@@ -160,27 +160,48 @@ namespace OmniHidTaskbar.Core
         }
 
         /// <summary>
-        /// Loads settings with portable priority: Program directory first, then %AppData%, then Registry migration.
+        /// Probes whether the application base directory is writable by standard user permissions.
+        /// </summary>
+        /// <returns><c>true</c> if portable local writing is allowed; otherwise <c>false</c> (e.g. Program Files).</returns>
+        private static bool IsProgramDirectoryWritable()
+        {
+            try
+            {
+                string testFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".write_test_" + Guid.NewGuid().ToString("N"));
+                File.WriteAllText(testFile, "test");
+                File.Delete(testFile);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Loads settings with portable and installed priority:
+        /// Portable mode (writable folder) prioritizes local JSON, while installed mode (Program Files) prioritizes %AppData%.
         /// </summary>
         /// <returns>A populated <see cref="AppSettings"/> instance.</returns>
         private AppSettings LoadInternal()
         {
             AppSettings settings = new AppSettings();
-
-            // 1. Try reading from Program Directory (preferred for portable zero-install mode)
             string localPath = GetProgramDirFilePath();
-            if (File.Exists(localPath))
+            string appDataPath = GetAppDataFilePath();
+            bool isWritable = IsProgramDirectoryWritable();
+
+            // 1. If running in portable mode (writable folder) and local settings exist, prioritize local file
+            if (isWritable && File.Exists(localPath))
             {
                 if (TryReadFile(localPath, settings))
                 {
                     _activeSettingsFilePath = localPath;
-                    Logger.Log("Settings loaded from program folder: " + localPath);
+                    Logger.Log("Settings loaded from portable program folder: " + localPath);
                     return settings;
                 }
             }
 
-            // 2. Fallback to AppData (standard Windows installation mode)
-            string appDataPath = GetAppDataFilePath();
+            // 2. In installed / protected mode (or if no local settings exist), prioritize %AppData%
             if (File.Exists(appDataPath))
             {
                 if (TryReadFile(appDataPath, settings))
@@ -191,7 +212,18 @@ namespace OmniHidTaskbar.Core
                 }
             }
 
-            // 3. Fallback to Windows Registry (legacy migration)
+            // 3. Fallback: If AppData does not exist yet, check local template (e.g. initial setup from Program Files)
+            if (File.Exists(localPath))
+            {
+                if (TryReadFile(localPath, settings))
+                {
+                    _activeSettingsFilePath = isWritable ? localPath : appDataPath;
+                    Logger.Log(string.Format("Settings initialized from template: {0} (Target: {1})", localPath, _activeSettingsFilePath));
+                    return settings;
+                }
+            }
+
+            // 4. Fallback to Windows Registry (legacy migration)
             try
             {
                 using (var key = Registry.CurrentUser.OpenSubKey(@"Software\OmniHidTaskbar"))
@@ -225,18 +257,21 @@ namespace OmniHidTaskbar.Core
             }
             catch { }
 
-            // 4. If no file existed, create default settings.json in program directory
-            if (!File.Exists(localPath) && !File.Exists(appDataPath))
+            // 5. If no file existed anywhere, create initial default configuration
+            _activeSettingsFilePath = isWritable ? localPath : appDataPath;
+            try
             {
-                try
+                string dir = Path.GetDirectoryName(_activeSettingsFilePath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 {
-                    File.WriteAllText(localPath, SerializeToJson(settings), Encoding.UTF8);
-                    Logger.Log("Default settings.json created in program folder: " + localPath);
+                    Directory.CreateDirectory(dir);
                 }
-                catch { }
-            }
 
-            _activeSettingsFilePath = localPath;
+                File.WriteAllText(_activeSettingsFilePath, SerializeToJson(settings), Encoding.UTF8);
+                Logger.Log("Default settings.json created at: " + _activeSettingsFilePath);
+            }
+            catch { }
+
             return settings;
         }
 
@@ -273,7 +308,7 @@ namespace OmniHidTaskbar.Core
         // ═══════════════════════════════════════════════════════════════════════
 
         /// <summary>
-        /// Persists the current configuration to disk (trying local directory first, then %AppData%),
+        /// Persists the current configuration to disk (respecting active target path, local directory in portable mode, or %AppData%),
         /// and updates the Windows startup registry run key accordingly.
         /// </summary>
         public void Save()
@@ -283,24 +318,35 @@ namespace OmniHidTaskbar.Core
                 if (_settings == null) return;
 
                 string json = SerializeToJson(_settings);
+                string targetPath = _activeSettingsFilePath;
 
-                // 1. First attempt: program directory
-                string localPath = GetProgramDirFilePath();
+                if (string.IsNullOrEmpty(targetPath))
+                {
+                    targetPath = IsProgramDirectoryWritable() ? GetProgramDirFilePath() : GetAppDataFilePath();
+                }
+
+                // 1. First attempt: primary target path
                 try
                 {
-                    File.WriteAllText(localPath, json, Encoding.UTF8);
-                    _activeSettingsFilePath = localPath;
-                    Logger.Log("Settings successfully saved to program folder: " + localPath);
+                    string dir = Path.GetDirectoryName(targetPath);
+                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    {
+                        Directory.CreateDirectory(dir);
+                    }
+
+                    File.WriteAllText(targetPath, json, Encoding.UTF8);
+                    _activeSettingsFilePath = targetPath;
+                    Logger.Log("Settings successfully saved to: " + targetPath);
                     UpdateStartupRegistry(_settings.RunOnStartup);
                     return;
                 }
                 catch (UnauthorizedAccessException)
                 {
-                    Logger.Log("Program directory is write-protected (e.g. Program Files). Falling back to AppData.");
+                    Logger.Log("Target directory is write-protected (e.g. Program Files). Falling back to AppData.");
                 }
                 catch (Exception ex)
                 {
-                    Logger.Log("Error saving settings to program folder: " + ex.Message + ". Trying AppData fallback.");
+                    Logger.Log("Error saving settings to " + targetPath + ": " + ex.Message + ". Trying AppData fallback.");
                 }
 
                 // 2. Fallback attempt: %AppData%
@@ -308,11 +354,14 @@ namespace OmniHidTaskbar.Core
                 {
                     string appDataPath = GetAppDataFilePath();
                     string dir = Path.GetDirectoryName(appDataPath);
-                    if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    {
+                        Directory.CreateDirectory(dir);
+                    }
 
                     File.WriteAllText(appDataPath, json, Encoding.UTF8);
                     _activeSettingsFilePath = appDataPath;
-                    Logger.Log("Settings saved to AppData folder: " + appDataPath);
+                    Logger.Log("Settings saved to AppData fallback: " + appDataPath);
                 }
                 catch (Exception ex)
                 {
