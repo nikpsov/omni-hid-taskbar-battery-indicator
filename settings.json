@@ -4,6 +4,7 @@
   "HideWhenDisconnected": true,
   "RunOnStartup": false,
   "PollIntervalSeconds": 15,
+  "BackgroundPollIntervalSeconds": 300,
   "HiddenDevices": [],
   "DeviceOrder": [],
   "CustomDeviceNames": {}

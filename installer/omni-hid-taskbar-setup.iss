@@ -1,6 +1,6 @@
 #define MyAppName "OmniHID Taskbar Battery Indicator"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.0.4"
+  #define MyAppVersion "0.0.5"
 #endif
 #define MyAppPublisher "nikpsov"
 #define MyAppURL "https://github.com/nikpsov/omni-hid-taskbar-battery-indicator"
@@ -40,7 +40,6 @@ Name: "startup"; Description: "Run at Windows startup"; GroupDescription: "Addit
 Source: "..\bin\OmniHidTaskbar.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\bin\OmniHidTaskbarDebug.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\bin\OmniHid.Core.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\bin\settings.json"; DestDir: "{app}"; Flags: onlyifdoesntexist uninsneveruninstall
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.ru.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion

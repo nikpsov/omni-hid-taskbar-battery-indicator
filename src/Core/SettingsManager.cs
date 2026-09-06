@@ -42,6 +42,11 @@ namespace OmniHidTaskbar.Core
         public int PollIntervalSeconds { get; set; }
 
         /// <summary>
+        /// Gets or sets the timer frequency in seconds between peripheral telemetry queries in background mode (e.g. fullscreen games, locked session).
+        /// </summary>
+        public int BackgroundPollIntervalSeconds { get; set; }
+
+        /// <summary>
         /// Gets or sets the collection of peripheral model names or identifiers explicitly hidden by the user.
         /// </summary>
         public List<string> HiddenDevices { get; set; }
@@ -66,6 +71,7 @@ namespace OmniHidTaskbar.Core
             HideWhenDisconnected = true;
             RunOnStartup = false;
             PollIntervalSeconds = 15;
+            BackgroundPollIntervalSeconds = 300;
             HiddenDevices = new List<string>();
             DeviceOrder = new List<string>();
             CustomDeviceNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -197,6 +203,7 @@ namespace OmniHidTaskbar.Core
                 {
                     _activeSettingsFilePath = localPath;
                     Logger.Log("Settings loaded from portable program folder: " + localPath);
+                    EnsureSchemaMigrated(localPath, settings);
                     return settings;
                 }
             }
@@ -208,6 +215,7 @@ namespace OmniHidTaskbar.Core
                 {
                     _activeSettingsFilePath = appDataPath;
                     Logger.Log("Settings loaded from AppData folder: " + appDataPath);
+                    EnsureSchemaMigrated(appDataPath, settings);
                     return settings;
                 }
             }
@@ -291,6 +299,8 @@ namespace OmniHidTaskbar.Core
                 target.HideWhenDisconnected = ParseBoolField(json, "HideWhenDisconnected", target.HideWhenDisconnected);
                 target.RunOnStartup = ParseBoolField(json, "RunOnStartup", target.RunOnStartup);
                 target.PollIntervalSeconds = ParseIntField(json, "PollIntervalSeconds", target.PollIntervalSeconds);
+                target.BackgroundPollIntervalSeconds = ParseIntField(json, "BackgroundPollIntervalSeconds", target.BackgroundPollIntervalSeconds);
+                if (target.BackgroundPollIntervalSeconds <= 0) target.BackgroundPollIntervalSeconds = 300;
                 target.HiddenDevices = ParseStringArrayField(json, "HiddenDevices");
                 target.DeviceOrder = ParseStringArrayField(json, "DeviceOrder");
                 target.CustomDeviceNames = ParseStringDictionaryField(json, "CustomDeviceNames");
@@ -300,6 +310,31 @@ namespace OmniHidTaskbar.Core
             {
                 Logger.Log(string.Format("Failed to parse settings from {0}: {1}", path, ex.Message));
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Inspects the active JSON file on disk to determine whether newly added schema fields
+        /// (such as <c>BackgroundPollIntervalSeconds</c>) are missing, and rewrites the file to include them
+        /// while preserving all existing user preferences.
+        /// </summary>
+        /// <param name="filePath">Target settings file path.</param>
+        /// <param name="settings">Populated settings instance.</param>
+        private void EnsureSchemaMigrated(string filePath, AppSettings settings)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return;
+                string json = File.ReadAllText(filePath, Encoding.UTF8);
+                if (json.IndexOf("BackgroundPollIntervalSeconds", StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    File.WriteAllText(filePath, SerializeToJson(settings), Encoding.UTF8);
+                    Logger.Log("Migrated settings schema with new configuration defaults at: " + filePath);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("Settings schema migration warning: " + ex.Message);
             }
         }
 
@@ -420,6 +455,7 @@ namespace OmniHidTaskbar.Core
             sb.AppendFormat("  \"HideWhenDisconnected\": {0},\n", s.HideWhenDisconnected ? "true" : "false");
             sb.AppendFormat("  \"RunOnStartup\": {0},\n", s.RunOnStartup ? "true" : "false");
             sb.AppendFormat("  \"PollIntervalSeconds\": {0},\n", s.PollIntervalSeconds);
+            sb.AppendFormat("  \"BackgroundPollIntervalSeconds\": {0},\n", s.BackgroundPollIntervalSeconds);
             sb.Append("  \"HiddenDevices\": [");
             if (s.HiddenDevices != null && s.HiddenDevices.Count > 0)
             {

@@ -57,6 +57,18 @@ namespace OmniHidTaskbar.UI
         private readonly HashSet<string> _warnedLowBatteryDeviceIds = new HashSet<string>();
 
         private OmniManager _omniManager;
+        private string _lastRenderSignature = null;
+        private string _lastTrayIconSignature = null;
+        private bool _isBackgroundMode = false;
+        private bool _isSessionLocked = false;
+        private Visibility _lastVisibility = Visibility.Visible;
+
+        private static readonly FontFamily IconFont = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets");
+        private static readonly FontFamily TextFont = new FontFamily("Segoe UI Variable Display, Segoe UI");
+        private static readonly FontFamily CrossFont = new FontFamily("Segoe UI, Arial, sans-serif");
+        private static readonly Brush ChargingGreenBrush = CreateFrozenBrush(Color.FromRgb(30, 215, 96));
+        private static readonly Brush CriticalRedBrush = CreateFrozenBrush(Color.FromRgb(225, 40, 40));
+        private static readonly Brush DisconnectedCrossBrush = CreateFrozenBrush(Color.FromRgb(225, 45, 45));
 
         /// <summary>
         /// Gets whether the current Windows system personalization preference is set to dark theme.
@@ -179,17 +191,35 @@ namespace OmniHidTaskbar.UI
                     }
                 }
 
+                Microsoft.Win32.SystemEvents.SessionSwitch += OnSessionSwitch;
+
                 SetupHooks();
                 UpdatePosition();
 
-                // High-priority 40ms timer (Normal priority) for instant (<1 frame) fullscreen & geometry synchronization
-                _positionTimer = new DispatcherTimer(DispatcherPriority.Normal, this.Dispatcher) { Interval = TimeSpan.FromMilliseconds(40) };
+                // Relaxed background heartbeat timer (500ms at Background priority) for geometry verification.
+                // Win32 hooks (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, EVENT_OBJECT_LOCATIONCHANGE)
+                // handle instantaneous real-time window, taskbar, and Alt+Tab updates.
+                _positionTimer = new DispatcherTimer(DispatcherPriority.Background, this.Dispatcher) { Interval = TimeSpan.FromMilliseconds(500) };
                 _positionTimer.Tick += (ts, te) => UpdatePosition();
                 _positionTimer.Start();
+
+                // Post-startup memory optimization timer: flush one-time JIT allocations and WPF DirectX buffers
+                var memTimer = new DispatcherTimer(DispatcherPriority.Background, this.Dispatcher)
+                {
+                    Interval = TimeSpan.FromMilliseconds(1500)
+                };
+                memTimer.Tick += (ms, me) =>
+                {
+                    memTimer.Stop();
+                    TaskbarHelper.TrimProcessMemory();
+                    Logger.Log("Startup working set trimmed successfully");
+                };
+                memTimer.Start();
             };
 
             this.Closed += (s, e) =>
             {
+                Microsoft.Win32.SystemEvents.SessionSwitch -= OnSessionSwitch;
                 if (_omniManager != null) { _omniManager.Dispose(); _omniManager = null; }
                 if (_positionTimer != null) _positionTimer.Stop();
                 if (_hwndSource != null)
@@ -230,6 +260,13 @@ namespace OmniHidTaskbar.UI
         private static Brush CreateFrozenHitTestBrush()
         {
             var brush = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0));
+            brush.Freeze();
+            return brush;
+        }
+
+        private static Brush CreateFrozenBrush(Color color)
+        {
+            var brush = new SolidColorBrush(color);
             brush.Freeze();
             return brush;
         }
@@ -487,7 +524,6 @@ namespace OmniHidTaskbar.UI
         {
             try
             {
-                _mainStack.Children.Clear();
                 bool isLight = !IsDarkTheme;
                 var themeBrush = DwmHelper.GetPrimaryTextBrush(!isLight);
                 bool isTrayOnly = SettingsManager.Instance.Current.DisplayMode == 1;
@@ -497,6 +533,35 @@ namespace OmniHidTaskbar.UI
                 var targetDevices = _hideWhenDisconnected
                     ? visibleDevices.Where(d => d.IsConnected && d.BatteryPercent >= 0).ToList()
                     : visibleDevices;
+
+                var sb = new System.Text.StringBuilder();
+                sb.AppendFormat("{0}:{1}:{2}:{3}:", isLight, isTrayOnly, _displayStyle, _isCompactMode);
+                foreach (var d in targetDevices)
+                {
+                    sb.AppendFormat("{0}_{1}_{2}_{3}_{4}_{5};", d.Id, d.IsConnected, d.BatteryPercent, d.IsCharging, d.DisplayName, d.IconGlyph);
+                }
+                string currentSignature = sb.ToString();
+
+                var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                IntPtr flyoutHwnd = _flyout != null ? new System.Windows.Interop.WindowInteropHelper(_flyout).Handle : IntPtr.Zero;
+                bool isFullscreen = TaskbarHelper.IsForegroundFullscreen(hwnd, flyoutHwnd);
+
+                // If device state and visual configuration have not changed, skip rebuilding the visual tree
+                if (string.Equals(currentSignature, _lastRenderSignature, StringComparison.Ordinal) && _mainStack.Children.Count > 0)
+                {
+                    this.Visibility = (isTrayOnly || isFullscreen || (_shouldHideOverlay && _hideWhenDisconnected))
+                        ? Visibility.Hidden : Visibility.Visible;
+                    UpdateTrayTooltip(targetDevices);
+                    UpdateDynamicTrayIcon(targetDevices, isLight);
+                    if (_flyout != null && _flyout.IsVisible)
+                    {
+                        _flyout.UpdateData(visibleDevices);
+                    }
+                    return;
+                }
+
+                _lastRenderSignature = currentSignature;
+                _mainStack.Children.Clear();
 
                 if (targetDevices.Count > 0)
                 {
@@ -537,7 +602,6 @@ namespace OmniHidTaskbar.UI
                     // Compute dynamic overlay width based on item count and compact/full state
                     int itemSlotWidth = _isCompactMode ? 44 : (_displayStyle == 0 ? 58 : 46);
                     this.Width = Math.Max(50, targetDevices.Count * itemSlotWidth + 16);
-                    bool isFullscreen = TaskbarHelper.IsForegroundFullscreen(new System.Windows.Interop.WindowInteropHelper(this).Handle, _flyout != null ? new System.Windows.Interop.WindowInteropHelper(_flyout).Handle : IntPtr.Zero);
                     this.Visibility = (isTrayOnly || isFullscreen)
                         ? Visibility.Hidden : Visibility.Visible;
 
@@ -559,7 +623,7 @@ namespace OmniHidTaskbar.UI
                     var iconText = new TextBlock
                     {
                         Text = "\uE772", // Generic Hardware icon
-                        FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                        FontFamily = IconFont,
                         FontSize = 16,
                         Foreground = themeBrush,
                         Opacity = 0.75,
@@ -570,10 +634,10 @@ namespace OmniHidTaskbar.UI
                     var crossText = new TextBlock
                     {
                         Text = "\u2715",
-                        FontFamily = new FontFamily("Segoe UI, Arial, sans-serif"),
+                        FontFamily = CrossFont,
                         FontSize = 8.5,
                         FontWeight = FontWeights.Bold,
-                        Foreground = new SolidColorBrush(Color.FromRgb(225, 45, 45)),
+                        Foreground = DisconnectedCrossBrush,
                         HorizontalAlignment = HorizontalAlignment.Right,
                         VerticalAlignment = VerticalAlignment.Bottom,
                         Margin = new Thickness(0, 0, -3, -2)
@@ -584,7 +648,6 @@ namespace OmniHidTaskbar.UI
                     _mainStack.Children.Add(disconnectedGrid);
 
                     this.Width = 44;
-                    bool isFullscreen = TaskbarHelper.IsForegroundFullscreen(new System.Windows.Interop.WindowInteropHelper(this).Handle, _flyout != null ? new System.Windows.Interop.WindowInteropHelper(_flyout).Handle : IntPtr.Zero);
                     this.Visibility = (isTrayOnly || _hideWhenDisconnected || isFullscreen) ? Visibility.Hidden : Visibility.Visible;
 
                     if (_notifyIcon != null)
@@ -609,6 +672,7 @@ namespace OmniHidTaskbar.UI
 
         /// <summary>
         /// Constructs a compact WPF visual element representing a single device's icon and battery state.
+        /// Reuses static frozen brushes and typography descriptors to minimize heap allocations.
         /// </summary>
         /// <param name="dev">The device model state.</param>
         /// <param name="themeBrush">The theme-appropriate foreground brush for text and outline glyphs.</param>
@@ -627,7 +691,7 @@ namespace OmniHidTaskbar.UI
             var iconBlock = new TextBlock
             {
                 Text = !string.IsNullOrEmpty(dev.IconGlyph) ? dev.IconGlyph : dev.GetDefaultIconGlyph(),
-                FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                FontFamily = IconFont,
                 FontSize = _isCompactMode ? 13.5 : 15,
                 Foreground = themeBrush,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -641,7 +705,7 @@ namespace OmniHidTaskbar.UI
                 string percentText = (dev.IsConnected && dev.BatteryPercent >= 0) ? (dev.BatteryPercent + "%") : "--%";
                 var battText = new TextBlock
                 {
-                    FontFamily = new FontFamily("Segoe UI Variable Display, Segoe UI"),
+                    FontFamily = TextFont,
                     FontSize = _isCompactMode ? 11.5 : 12.5,
                     FontWeight = FontWeights.Normal,
                     Foreground = themeBrush,
@@ -656,10 +720,10 @@ namespace OmniHidTaskbar.UI
                     var bolt = new TextBlock
                     {
                         Text = "\uE945",
-                        FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                        FontFamily = IconFont,
                         FontSize = _isCompactMode ? 10 : 11,
                         FontWeight = FontWeights.Bold,
-                        Foreground = new SolidColorBrush(Color.FromRgb(30, 215, 96)),
+                        Foreground = ChargingGreenBrush,
                         VerticalAlignment = VerticalAlignment.Center,
                         Margin = new Thickness(0, 0, 1, 0)
                     };
@@ -679,7 +743,7 @@ namespace OmniHidTaskbar.UI
                 {
                     var disconnectedGlyph = new TextBlock
                     {
-                        FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                        FontFamily = IconFont,
                         FontSize = 16,
                         Foreground = themeBrush,
                         Text = "\uEBA0", // Empty battery frame
@@ -700,11 +764,9 @@ namespace OmniHidTaskbar.UI
                         char fillChar = dev.IsCharging ? (char)(0xEBAB + levelIndex) : (char)(0xEBA0 + levelIndex);
                         var fill = new TextBlock
                         {
-                            FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                            FontFamily = IconFont,
                             FontSize = 16,
-                            Foreground = dev.IsCharging ?
-                                new SolidColorBrush(Color.FromRgb(30, 215, 96)) :
-                                new SolidColorBrush(Color.FromRgb(225, 40, 40)),
+                            Foreground = dev.IsCharging ? ChargingGreenBrush : CriticalRedBrush,
                             Text = fillChar.ToString(),
                             VerticalAlignment = VerticalAlignment.Center
                         };
@@ -712,7 +774,7 @@ namespace OmniHidTaskbar.UI
 
                         var outline = new TextBlock
                         {
-                            FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                            FontFamily = IconFont,
                             FontSize = 16,
                             Foreground = themeBrush,
                             Text = dev.IsCharging ? "\uEBAB" : "\uEBA0",
@@ -724,7 +786,7 @@ namespace OmniHidTaskbar.UI
                     {
                         var normalGlyph = new TextBlock
                         {
-                            FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                            FontFamily = IconFont,
                             FontSize = 16,
                             Foreground = themeBrush,
                             Text = ((char)(0xEBA0 + levelIndex)).ToString(),
@@ -770,6 +832,13 @@ namespace OmniHidTaskbar.UI
             if (_flyout == null)
             {
                 _flyout = new FlyoutWindow(this, visibleDevices);
+                _flyout.IsVisibleChanged += (s, e) =>
+                {
+                    if (!_flyout.IsVisible)
+                    {
+                        TaskbarHelper.TrimProcessMemory();
+                    }
+                };
             }
 
             if (_flyout.IsVisible)
@@ -860,11 +929,78 @@ namespace OmniHidTaskbar.UI
         }
 
         /// <summary>
+        /// Handles Windows session state changes (lock / unlock) to throttle or resume hardware telemetry polling.
+        /// </summary>
+        private void OnSessionSwitch(object sender, Microsoft.Win32.SessionSwitchEventArgs e)
+        {
+            if (e.Reason == Microsoft.Win32.SessionSwitchReason.SessionLock)
+            {
+                _isSessionLocked = true;
+                UpdateBackgroundModeState();
+            }
+            else if (e.Reason == Microsoft.Win32.SessionSwitchReason.SessionUnlock)
+            {
+                _isSessionLocked = false;
+                UpdateBackgroundModeState();
+            }
+        }
+
+        /// <summary>
+        /// Evaluates active background condition (fullscreen game or locked session) and dynamically adjusts telemetry polling rate.
+        /// Throttles to <see cref="AppSettings.BackgroundPollIntervalSeconds"/> in background, and restores
+        /// <see cref="AppSettings.PollIntervalSeconds"/> with an immediate telemetry refresh upon returning to desktop.
+        /// </summary>
+        private void UpdateBackgroundModeState()
+        {
+            bool shouldBeBackground = _lastFullscreen || _isSessionLocked;
+            if (shouldBeBackground == _isBackgroundMode) return;
+            _isBackgroundMode = shouldBeBackground;
+
+            if (_isBackgroundMode)
+            {
+                int bgSec = Math.Max(30, SettingsManager.Instance.Current.BackgroundPollIntervalSeconds);
+                Logger.Log(string.Format("Entering background mode (fullscreen/games/lock). Throttling polling interval to {0}s.", bgSec));
+                if (_omniManager != null)
+                {
+                    _omniManager.SetPollInterval(bgSec * 1000);
+                }
+                if (_positionTimer != null)
+                {
+                    _positionTimer.Interval = TimeSpan.FromMilliseconds(2500);
+                }
+            }
+            else
+            {
+                int normalSec = Math.Max(5, SettingsManager.Instance.Current.PollIntervalSeconds);
+                Logger.Log(string.Format("Exiting background mode. Restoring polling interval to {0}s and requesting immediate refresh.", normalSec));
+                if (_omniManager != null)
+                {
+                    _omniManager.SetPollInterval(normalSec * 1000);
+                    _omniManager.ForceRefresh();
+                }
+                if (_positionTimer != null)
+                {
+                    _positionTimer.Interval = TimeSpan.FromMilliseconds(500);
+                }
+                UpdatePosition();
+            }
+        }
+
+        /// <summary>
         /// Native hook callback invoked when foreground window, taskbar or window bounds shift.
         /// </summary>
         private void WinEventCallback(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
         {
             UpdatePosition();
+            if (eventType == TaskbarHelper.EVENT_SYSTEM_FOREGROUND && this.Visibility == Visibility.Visible)
+            {
+                var myHwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                if (myHwnd != IntPtr.Zero)
+                {
+                    TaskbarHelper.SetWindowPos(myHwnd, TaskbarHelper.HWND_TOPMOST, 0, 0, 0, 0,
+                        TaskbarHelper.SWP_NOACTIVATE | TaskbarHelper.SWP_NOSIZE | TaskbarHelper.SWP_NOMOVE);
+                }
+            }
         }
 
         // ═══════════════════════════════════════════════════════════════════════════
@@ -893,13 +1029,17 @@ namespace OmniHidTaskbar.UI
                 {
                     _lastFullscreen = isFullscreen;
                     Logger.Log(string.Format("Fullscreen state changed: isFullscreen={0}", isFullscreen));
+                    UpdateBackgroundModeState();
                 }
                 bool isTrayOnly = SettingsManager.Instance.Current.DisplayMode == 1;
 
                 if (isTrayOnly || isFullscreen || (_shouldHideOverlay && _hideWhenDisconnected))
                 {
                     if (this.Visibility != Visibility.Hidden)
+                    {
                         this.Visibility = Visibility.Hidden;
+                        _lastVisibility = Visibility.Hidden;
+                    }
                     return;
                 }
                 else
@@ -937,7 +1077,10 @@ namespace OmniHidTaskbar.UI
                     x = tbRect.Right - physicalWidth - 10;
                 }
 
-                if (x != _lastX || y != _lastY)
+                bool positionChanged = (x != _lastX || y != _lastY);
+                bool visibilityBecameVisible = (_lastVisibility != Visibility.Visible && this.Visibility == Visibility.Visible);
+
+                if (positionChanged)
                 {
                     _lastX = x;
                     _lastY = y;
@@ -951,12 +1094,13 @@ namespace OmniHidTaskbar.UI
                         TaskbarHelper.SetWindowPos(hwnd, TaskbarHelper.HWND_TOPMOST, x, y, physicalWidth, physicalHeight, TaskbarHelper.SWP_NOACTIVATE);
                     }
                 }
-
-                if (this.Visibility == Visibility.Visible && hwnd != IntPtr.Zero)
+                else if (visibilityBecameVisible && hwnd != IntPtr.Zero)
                 {
                     TaskbarHelper.SetWindowPos(hwnd, TaskbarHelper.HWND_TOPMOST, 0, 0, 0, 0,
                         TaskbarHelper.SWP_NOACTIVATE | TaskbarHelper.SWP_NOSIZE | TaskbarHelper.SWP_NOMOVE);
                 }
+
+                _lastVisibility = this.Visibility;
             }
             finally
             {
@@ -1021,13 +1165,26 @@ namespace OmniHidTaskbar.UI
 
         /// <summary>
         /// Renders an in-memory 16x16 GDI+ bitmap depicting live peripheral telemetry or minimal battery glyphs,
-        /// converting it to a native Win32 icon and destroying the intermediate unmanaged GDI icon handle to prevent leaks.
+        /// converting it to a native Win32 icon, disposing the previous icon to prevent leaks, and destroying the intermediate unmanaged GDI icon handle.
         /// </summary>
         /// <param name="devices">Current snapshot of target devices.</param>
         /// <param name="isLight">True if Windows taskbar uses a light theme; false for dark theme.</param>
         private void UpdateDynamicTrayIcon(List<TaskbarDeviceState> devices, bool isLight)
         {
             if (_notifyIcon == null) return;
+
+            var activeDev = devices != null ? devices.FirstOrDefault(d => d.IsConnected && d.BatteryPercent >= 0) : null;
+            string traySig = activeDev != null
+                ? string.Format("{0}_{1}_{2}_{3}", activeDev.Id, activeDev.BatteryPercent, activeDev.IsCharging, isLight)
+                : ("offline_" + isLight);
+
+            // Fast-path: if tray icon visual state has not changed and an icon is already set, skip redrawing
+            if (string.Equals(traySig, _lastTrayIconSignature, StringComparison.Ordinal) && _notifyIcon.Icon != null)
+            {
+                return;
+            }
+            _lastTrayIconSignature = traySig;
+
             try
             {
                 using (var bmp = new Bitmap(16, 16))
@@ -1036,7 +1193,6 @@ namespace OmniHidTaskbar.UI
                     g.Clear(System.Drawing.Color.Transparent);
                     var strokeColor = isLight ? System.Drawing.Color.Black : System.Drawing.Color.White;
 
-                    var activeDev = devices != null ? devices.FirstOrDefault(d => d.IsConnected && d.BatteryPercent >= 0) : null;
                     if (activeDev != null)
                     {
                         // Battery frame
@@ -1079,7 +1235,15 @@ namespace OmniHidTaskbar.UI
                     IntPtr hIcon = bmp.GetHicon();
                     try
                     {
-                        _notifyIcon.Icon = System.Drawing.Icon.FromHandle(hIcon);
+                        using (var icon = System.Drawing.Icon.FromHandle(hIcon))
+                        {
+                            var oldIcon = _notifyIcon.Icon;
+                            _notifyIcon.Icon = (System.Drawing.Icon)icon.Clone();
+                            if (oldIcon != null)
+                            {
+                                try { oldIcon.Dispose(); } catch { }
+                            }
+                        }
                     }
                     finally
                     {

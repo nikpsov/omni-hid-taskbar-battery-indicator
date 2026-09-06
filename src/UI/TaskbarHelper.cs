@@ -76,6 +76,10 @@ namespace OmniHidTaskbar.UI
             return IntPtr.Size == 8 ? SetWindowLongPtr64(hWnd, nIndex, dwNewLong) : SetWindowLong32(hWnd, nIndex, dwNewLong);
         }
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetProcessWorkingSetSize(IntPtr hProcess, IntPtr dwMinimumWorkingSetSize, IntPtr dwMaximumWorkingSetSize);
+
         // ═══════════════════════════════════════════════════════════════════════
         // Win32 Structures & Constants
         // ═══════════════════════════════════════════════════════════════════════
@@ -209,6 +213,27 @@ namespace OmniHidTaskbar.UI
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Forces garbage collection and trims unreferenced pages from the application's physical RAM working set.
+        /// Flushes one-time JIT-compiled pages and WPF Direct3D startup allocations back to the Windows OS.
+        /// </summary>
+        public static void TrimProcessMemory()
+        {
+            try
+            {
+                GC.Collect(2, GCCollectionMode.Forced);
+                GC.WaitForPendingFinalizers();
+                GC.Collect(2, GCCollectionMode.Forced);
+
+                if (Environment.OSVersion.Platform == PlatformID.Win32NT)
+                {
+                    IntPtr hProc = System.Diagnostics.Process.GetCurrentProcess().Handle;
+                    SetProcessWorkingSetSize(hProc, new IntPtr(-1), new IntPtr(-1));
+                }
+            }
+            catch { }
         }
     }
 }
