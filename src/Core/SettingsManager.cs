@@ -1,4 +1,5 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using Microsoft.Win32;
@@ -11,6 +12,7 @@ namespace OmniHidTaskbar.Core
         public bool HideWhenDisconnected { get; set; }
         public bool RunOnStartup { get; set; }
         public int PollIntervalSeconds { get; set; }
+        public List<string> HiddenDevices { get; set; }
 
         public AppSettings()
         {
@@ -18,6 +20,7 @@ namespace OmniHidTaskbar.Core
             HideWhenDisconnected = true;
             RunOnStartup = false;
             PollIntervalSeconds = 15;
+            HiddenDevices = new List<string>();
         }
     }
 
@@ -157,6 +160,7 @@ namespace OmniHidTaskbar.Core
                 target.HideWhenDisconnected = ParseBoolField(json, "HideWhenDisconnected", target.HideWhenDisconnected);
                 target.RunOnStartup = ParseBoolField(json, "RunOnStartup", target.RunOnStartup);
                 target.PollIntervalSeconds = ParseIntField(json, "PollIntervalSeconds", target.PollIntervalSeconds);
+                target.HiddenDevices = ParseStringArrayField(json, "HiddenDevices");
                 return true;
             }
             catch (Exception ex)
@@ -246,9 +250,70 @@ namespace OmniHidTaskbar.Core
             sb.AppendFormat("  \"DisplayStyle\": {0},\n", s.DisplayStyle);
             sb.AppendFormat("  \"HideWhenDisconnected\": {0},\n", s.HideWhenDisconnected ? "true" : "false");
             sb.AppendFormat("  \"RunOnStartup\": {0},\n", s.RunOnStartup ? "true" : "false");
-            sb.AppendFormat("  \"PollIntervalSeconds\": {0}\n", s.PollIntervalSeconds);
+            sb.AppendFormat("  \"PollIntervalSeconds\": {0},\n", s.PollIntervalSeconds);
+            sb.Append("  \"HiddenDevices\": [");
+            if (s.HiddenDevices != null && s.HiddenDevices.Count > 0)
+            {
+                sb.AppendLine();
+                for (int i = 0; i < s.HiddenDevices.Count; i++)
+                {
+                    string escaped = s.HiddenDevices[i].Replace("\\", "\\\\").Replace("\"", "\\\"");
+                    sb.AppendFormat("    \"{0}\"{1}\n", escaped, i < s.HiddenDevices.Count - 1 ? "," : "");
+                }
+                sb.AppendLine("  ]");
+            }
+            else
+            {
+                sb.AppendLine("]");
+            }
             sb.AppendLine("}");
             return sb.ToString();
+        }
+
+        private static List<string> ParseStringArrayField(string json, string fieldName)
+        {
+            var result = new List<string>();
+            try
+            {
+                string search = "\"" + fieldName + "\":";
+                int idx = json.IndexOf(search, StringComparison.OrdinalIgnoreCase);
+                if (idx < 0) return result;
+                idx += search.Length;
+
+                int openBracket = json.IndexOf('[', idx);
+                if (openBracket < 0) return result;
+
+                int closeBracket = json.IndexOf(']', openBracket);
+                if (closeBracket < 0) return result;
+
+                int pos = openBracket + 1;
+                while (pos < closeBracket)
+                {
+                    int quoteStart = json.IndexOf('"', pos);
+                    if (quoteStart < 0 || quoteStart >= closeBracket) break;
+
+                    int quoteEnd = quoteStart + 1;
+                    while (quoteEnd < closeBracket)
+                    {
+                        if (json[quoteEnd] == '"' && json[quoteEnd - 1] != '\\')
+                            break;
+                        quoteEnd++;
+                    }
+
+                    if (quoteEnd >= closeBracket) break;
+
+                    string item = json.Substring(quoteStart + 1, quoteEnd - quoteStart - 1);
+                    item = item.Replace("\\\"", "\"").Replace("\\\\", "\\");
+                    if (!string.IsNullOrWhiteSpace(item))
+                    {
+                        result.Add(item.Trim());
+                    }
+
+                    pos = quoteEnd + 1;
+                }
+            }
+            catch { }
+            return result;
         }
 
         private static int ParseIntField(string json, string fieldName, int defaultValue)

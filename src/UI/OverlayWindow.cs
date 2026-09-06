@@ -1,9 +1,11 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -79,6 +81,7 @@ namespace OmniHidTaskbar.UI
         private int _displayStyle = 0; // 0 = Percent, 1 = Icon
 
         private List<TaskbarDeviceState> _latestDevices = new List<TaskbarDeviceState>();
+        private readonly Dictionary<string, TaskbarDeviceState> _allKnownDevices = new Dictionary<string, TaskbarDeviceState>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _warnedLowBatteryDeviceIds = new HashSet<string>();
 
         public bool IsDarkTheme
@@ -168,6 +171,7 @@ namespace OmniHidTaskbar.UI
 
             // Subscribe to DeviceManager
             _omniManager = new OmniManager();
+            _omniManager.RegisteredOnly = true;
             _omniManager.DevicesUpdated += OnOmniDevicesUpdated;
             int pollSec = SettingsManager.Instance.Current.PollIntervalSeconds;
             _omniManager.StartMonitoring(pollSec > 0 ? pollSec * 1000 : 15000);
@@ -235,6 +239,7 @@ namespace OmniHidTaskbar.UI
         private OmniManager _omniManager;
 
         public List<TaskbarDeviceState> LatestDevices { get { return _latestDevices; } }
+        public List<TaskbarDeviceState> VisibleDevices { get { return GetVisibleDevices(_latestDevices); } }
 
         private void OnOmniDevicesUpdated(IReadOnlyList<IOmniDevice> devices)
         {
@@ -252,8 +257,79 @@ namespace OmniHidTaskbar.UI
             this.Dispatcher.BeginInvoke(new Action(() =>
             {
                 _latestDevices = devices != null ? devices.Select(TaskbarDeviceState.FromOmniDevice).ToList() : new List<TaskbarDeviceState>();
+                if (_latestDevices != null)
+                {
+                    foreach (var d in _latestDevices)
+                    {
+                        if (d != null && !string.IsNullOrEmpty(d.Name))
+                        {
+                            _allKnownDevices[d.Name] = d;
+                        }
+                    }
+                }
                 ApplyDevicesState(_latestDevices);
             }));
+        }
+
+        public bool IsDeviceHidden(string nameOrId)
+        {
+            if (string.IsNullOrEmpty(nameOrId)) return false;
+            var hidden = SettingsManager.Instance.Current.HiddenDevices;
+            if (hidden == null || hidden.Count == 0) return false;
+            foreach (var h in hidden)
+            {
+                if (string.Equals(h.Trim(), nameOrId.Trim(), StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+
+        public bool IsDeviceVisible(TaskbarDeviceState dev)
+        {
+            if (dev == null) return false;
+            var hidden = SettingsManager.Instance.Current.HiddenDevices;
+            if (hidden == null || hidden.Count == 0) return true;
+            foreach (var h in hidden)
+            {
+                if (!string.IsNullOrEmpty(dev.Name) && string.Equals(h.Trim(), dev.Name.Trim(), StringComparison.OrdinalIgnoreCase))
+                    return false;
+                if (!string.IsNullOrEmpty(dev.Id) && string.Equals(h.Trim(), dev.Id.Trim(), StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+            return true;
+        }
+
+        public List<TaskbarDeviceState> GetVisibleDevices(List<TaskbarDeviceState> devices)
+        {
+            if (devices == null) return new List<TaskbarDeviceState>();
+            return devices.Where(IsDeviceVisible).ToList();
+        }
+
+        private void SetDeviceVisibility(string deviceName, bool isVisible)
+        {
+            if (string.IsNullOrEmpty(deviceName)) return;
+            var hidden = SettingsManager.Instance.Current.HiddenDevices;
+            if (hidden == null)
+            {
+                hidden = new List<string>();
+                SettingsManager.Instance.Current.HiddenDevices = hidden;
+            }
+
+            if (isVisible)
+            {
+                hidden.RemoveAll(x => string.Equals(x.Trim(), deviceName.Trim(), StringComparison.OrdinalIgnoreCase));
+            }
+            else
+            {
+                bool alreadyExists = hidden.Any(x => string.Equals(x.Trim(), deviceName.Trim(), StringComparison.OrdinalIgnoreCase));
+                if (!alreadyExists)
+                {
+                    hidden.Add(deviceName.Trim());
+                }
+            }
+
+            SettingsManager.Instance.Save();
+            ApplyDevicesState(_latestDevices);
         }
 
         private void ApplyDevicesState(List<TaskbarDeviceState> devices)
@@ -264,15 +340,18 @@ namespace OmniHidTaskbar.UI
                 bool isLight = !IsDarkTheme;
                 var themeBrush = isLight ? Brushes.Black : Brushes.White;
 
-                var connectedDevices = devices.Where(d => d.IsConnected && d.BatteryPercent >= 0).ToList();
+                var visibleDevices = GetVisibleDevices(devices);
+                var targetDevices = _hideWhenDisconnected
+                    ? visibleDevices.Where(d => d.IsConnected && d.BatteryPercent >= 0).ToList()
+                    : visibleDevices;
 
-                if (connectedDevices.Count > 0)
+                if (targetDevices.Count > 0)
                 {
                     _shouldHideOverlay = false;
 
-                    for (int i = 0; i < connectedDevices.Count; i++)
+                    for (int i = 0; i < targetDevices.Count; i++)
                     {
-                        var dev = connectedDevices[i];
+                        var dev = targetDevices[i];
                         if (i > 0)
                         {
                             // Spacer between multiple devices
@@ -287,8 +366,8 @@ namespace OmniHidTaskbar.UI
                         var devWidget = BuildTaskbarDeviceWidget(dev, themeBrush, isLight);
                         _mainStack.Children.Add(devWidget);
 
-                        // Low battery toast warning
-                        if (dev.BatteryPercent <= 20 && !dev.IsCharging)
+                        // Low battery toast warning (only for connected devices)
+                        if (dev.IsConnected && dev.BatteryPercent >= 0 && dev.BatteryPercent <= 20 && !dev.IsCharging)
                         {
                             if (!_warnedLowBatteryDeviceIds.Contains(dev.Id))
                             {
@@ -303,10 +382,10 @@ namespace OmniHidTaskbar.UI
                     }
 
                     // Adjust overlay width based on count of items
-                    this.Width = Math.Max(70, connectedDevices.Count * 68 + 20);
+                    this.Width = Math.Max(70, targetDevices.Count * 68 + 20);
                     this.Visibility = IsForegroundFullscreen() ? Visibility.Hidden : Visibility.Visible;
 
-                    UpdateTrayTooltip(connectedDevices);
+                    UpdateTrayTooltip(targetDevices);
                 }
                 else
                 {
@@ -358,8 +437,10 @@ namespace OmniHidTaskbar.UI
 
                 if (_flyout != null && _flyout.IsVisible)
                 {
-                    _flyout.UpdateData(devices);
+                    _flyout.UpdateData(visibleDevices);
                 }
+
+                UpdatePosition();
             }
             catch { }
         }
@@ -369,7 +450,8 @@ namespace OmniHidTaskbar.UI
             var stack = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                VerticalAlignment = VerticalAlignment.Center
+                VerticalAlignment = VerticalAlignment.Center,
+                Opacity = (dev.IsConnected && dev.BatteryPercent >= 0) ? 1.0 : 0.65
             };
 
             // Device glyph
@@ -387,6 +469,7 @@ namespace OmniHidTaskbar.UI
             if (_displayStyle == 0)
             {
                 // Percent text
+                string percentText = (dev.IsConnected && dev.BatteryPercent >= 0) ? (dev.BatteryPercent + "%") : "--%";
                 var battText = new TextBlock
                 {
                     FontFamily = new FontFamily("Segoe UI Variable Display, Segoe UI"),
@@ -394,12 +477,12 @@ namespace OmniHidTaskbar.UI
                     FontWeight = FontWeights.Normal,
                     Foreground = themeBrush,
                     VerticalAlignment = VerticalAlignment.Center,
-                    Text = dev.BatteryPercent + "%",
+                    Text = percentText,
                     Margin = new Thickness(0, 0, 2, 0)
                 };
                 stack.Children.Add(battText);
 
-                if (dev.IsCharging)
+                if (dev.IsConnected && dev.IsCharging)
                 {
                     var bolt = new TextBlock
                     {
@@ -423,48 +506,63 @@ namespace OmniHidTaskbar.UI
                     Margin = new Thickness(0, 0, 2, 0)
                 };
 
-                int levelIndex = (int)Math.Round(dev.BatteryPercent / 10.0);
-                if (levelIndex < 0) levelIndex = 0;
-                if (levelIndex > 10) levelIndex = 10;
-
-                bool isColored = dev.IsCharging || dev.BatteryPercent <= 20;
-
-                if (isColored)
+                if (!dev.IsConnected || dev.BatteryPercent < 0)
                 {
-                    var outline = new TextBlock
+                    var disconnectedGlyph = new TextBlock
                     {
                         FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
                         FontSize = 16,
                         Foreground = themeBrush,
-                        Text = dev.IsCharging ? "\uEBAB" : "\uEBA0",
+                        Text = "\uEBA0", // Empty battery frame
                         VerticalAlignment = VerticalAlignment.Center
                     };
-                    battIconGrid.Children.Add(outline);
-
-                    char fillChar = dev.IsCharging ? (char)(0xEBAB + levelIndex) : (char)(0xEBA0 + levelIndex);
-                    var fill = new TextBlock
-                    {
-                        FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
-                        FontSize = 16,
-                        Foreground = dev.IsCharging ?
-                            new SolidColorBrush(Color.FromRgb(30, 215, 96)) :
-                            new SolidColorBrush(Color.FromRgb(225, 40, 40)),
-                        Text = fillChar.ToString(),
-                        VerticalAlignment = VerticalAlignment.Center
-                    };
-                    battIconGrid.Children.Add(fill);
+                    battIconGrid.Children.Add(disconnectedGlyph);
                 }
                 else
                 {
-                    var normalGlyph = new TextBlock
+                    int levelIndex = (int)Math.Round(dev.BatteryPercent / 10.0);
+                    if (levelIndex < 0) levelIndex = 0;
+                    if (levelIndex > 10) levelIndex = 10;
+
+                    bool isColored = dev.IsCharging || dev.BatteryPercent <= 20;
+
+                    if (isColored)
                     {
-                        FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
-                        FontSize = 16,
-                        Foreground = themeBrush,
-                        Text = ((char)(0xEBA0 + levelIndex)).ToString(),
-                        VerticalAlignment = VerticalAlignment.Center
-                    };
-                    battIconGrid.Children.Add(normalGlyph);
+                        var outline = new TextBlock
+                        {
+                            FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                            FontSize = 16,
+                            Foreground = themeBrush,
+                            Text = dev.IsCharging ? "\uEBAB" : "\uEBA0",
+                            VerticalAlignment = VerticalAlignment.Center
+                        };
+                        battIconGrid.Children.Add(outline);
+
+                        char fillChar = dev.IsCharging ? (char)(0xEBAB + levelIndex) : (char)(0xEBA0 + levelIndex);
+                        var fill = new TextBlock
+                        {
+                            FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                            FontSize = 16,
+                            Foreground = dev.IsCharging ?
+                                new SolidColorBrush(Color.FromRgb(30, 215, 96)) :
+                                new SolidColorBrush(Color.FromRgb(225, 40, 40)),
+                            Text = fillChar.ToString(),
+                            VerticalAlignment = VerticalAlignment.Center
+                        };
+                        battIconGrid.Children.Add(fill);
+                    }
+                    else
+                    {
+                        var normalGlyph = new TextBlock
+                        {
+                            FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                            FontSize = 16,
+                            Foreground = themeBrush,
+                            Text = ((char)(0xEBA0 + levelIndex)).ToString(),
+                            VerticalAlignment = VerticalAlignment.Center
+                        };
+                        battIconGrid.Children.Add(normalGlyph);
+                    }
                 }
 
                 stack.Children.Add(battIconGrid);
@@ -473,20 +571,29 @@ namespace OmniHidTaskbar.UI
             return stack;
         }
 
-        private void UpdateTrayTooltip(List<TaskbarDeviceState> connectedDevices)
+        private void UpdateTrayTooltip(List<TaskbarDeviceState> devices)
         {
             if (_notifyIcon == null) return;
-            string tip = string.Join(" | ", connectedDevices.Select(d =>
-                string.Format("{0}: {1}%{2}", d.Name, d.BatteryPercent, d.IsCharging ? " ⚡" : "")));
+            if (devices == null || devices.Count == 0)
+            {
+                _notifyIcon.Text = "Device Battery: Disconnected";
+                return;
+            }
+
+            string tip = string.Join(" | ", devices.Select(d =>
+                (d.IsConnected && d.BatteryPercent >= 0)
+                    ? string.Format("{0}: {1}%{2}", d.Name, d.BatteryPercent, d.IsCharging ? " ⚡" : "")
+                    : string.Format("{0}: Disconnected", d.Name)));
             if (tip.Length > 63) tip = tip.Substring(0, 63);
             _notifyIcon.Text = tip;
         }
 
         private void ShowFlyout()
         {
+            var visibleDevices = GetVisibleDevices(_latestDevices);
             if (_flyout == null)
             {
-                _flyout = new FlyoutWindow(this, _latestDevices);
+                _flyout = new FlyoutWindow(this, visibleDevices);
             }
 
             if (_flyout.IsVisible)
@@ -495,7 +602,7 @@ namespace OmniHidTaskbar.UI
             }
             else
             {
-                _flyout.ShowFlyout(_latestDevices);
+                _flyout.ShowFlyout(visibleDevices);
             }
         }
 
@@ -671,6 +778,49 @@ namespace OmniHidTaskbar.UI
             };
             menu.Items.Add(hideItem);
 
+            // Devices visibility submenu
+            var devicesSubmenu = new MenuItem
+            {
+                Header = "Device Visibility",
+                Style = CreateSubmenuHeaderStyle(isDark),
+                ToolTip = "Select which devices to show in the taskbar and flyout"
+            };
+
+            var devicesList = _allKnownDevices.Values.ToList();
+            if (devicesList.Count == 0 && _latestDevices != null && _latestDevices.Count > 0)
+            {
+                devicesList = _latestDevices;
+            }
+
+            if (devicesList.Count == 0)
+            {
+                var emptyItem = CreateStyledMenuItem("(No devices found)", itemStyle);
+                emptyItem.IsEnabled = false;
+                devicesSubmenu.Items.Add(emptyItem);
+            }
+            else
+            {
+                var sorted = devicesList
+                    .GroupBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
+                    .Select(g => g.First())
+                    .OrderBy(d => d.Name)
+                    .ToList();
+
+                foreach (var d in sorted)
+                {
+                    string devName = d.Name;
+                    bool isVisible = !IsDeviceHidden(devName);
+                    var devItem = CreateStyledMenuItem(devName, itemStyle, true, isVisible);
+                    devItem.StaysOpenOnClick = true;
+                    devItem.Click += (s, e) =>
+                    {
+                        SetDeviceVisibility(devName, devItem.IsChecked);
+                    };
+                    devicesSubmenu.Items.Add(devItem);
+                }
+            }
+            menu.Items.Add(devicesSubmenu);
+
             var startupItem = CreateStyledMenuItem("Run on startup", itemStyle, true, _runOnStartup);
             startupItem.Click += (s, e) =>
             {
@@ -690,6 +840,120 @@ namespace OmniHidTaskbar.UI
             menu.Items.Add(exitItem);
 
             menu.IsOpen = true;
+        }
+
+        private static Style CreateSubmenuHeaderStyle(bool isDark)
+        {
+            var style = new Style(typeof(MenuItem));
+            var template = new ControlTemplate(typeof(MenuItem));
+
+            var border = new FrameworkElementFactory(typeof(Border), "Bd");
+            border.SetValue(Border.CornerRadiusProperty, new CornerRadius(4));
+            border.SetValue(Border.BackgroundProperty, Brushes.Transparent);
+            border.SetValue(Border.PaddingProperty, new Thickness(8, 6, 8, 6));
+            border.SetValue(Border.MarginProperty, new Thickness(0, 1, 0, 1));
+            border.SetValue(Border.SnapsToDevicePixelsProperty, true);
+
+            var grid = new FrameworkElementFactory(typeof(Grid));
+
+            var col0 = new FrameworkElementFactory(typeof(ColumnDefinition));
+            col0.SetValue(ColumnDefinition.WidthProperty, new GridLength(20));
+            grid.AppendChild(col0);
+
+            var col1 = new FrameworkElementFactory(typeof(ColumnDefinition));
+            col1.SetValue(ColumnDefinition.WidthProperty, new GridLength(1, GridUnitType.Star));
+            grid.AppendChild(col1);
+
+            var col2 = new FrameworkElementFactory(typeof(ColumnDefinition));
+            col2.SetValue(ColumnDefinition.WidthProperty, new GridLength(16));
+            grid.AppendChild(col2);
+
+            var iconGlyph = new FrameworkElementFactory(typeof(TextBlock), "IconGlyph");
+            iconGlyph.SetValue(Grid.ColumnProperty, 0);
+            iconGlyph.SetValue(TextBlock.TextProperty, "\uE772");
+            iconGlyph.SetValue(TextBlock.FontFamilyProperty, new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets, Segoe UI Symbol"));
+            iconGlyph.SetValue(TextBlock.FontSizeProperty, 11.5);
+            iconGlyph.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
+            iconGlyph.SetValue(TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Left);
+            iconGlyph.SetValue(TextBlock.ForegroundProperty, isDark ? Brushes.White : Brushes.Black);
+            grid.AppendChild(iconGlyph);
+
+            var cp = new FrameworkElementFactory(typeof(ContentPresenter), "HeaderHost");
+            cp.SetValue(Grid.ColumnProperty, 1);
+            cp.SetValue(ContentPresenter.ContentSourceProperty, "Header");
+            cp.SetValue(ContentPresenter.RecognizesAccessKeyProperty, true);
+            cp.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
+            grid.AppendChild(cp);
+
+            var arrow = new FrameworkElementFactory(typeof(TextBlock), "SubmenuArrow");
+            arrow.SetValue(Grid.ColumnProperty, 2);
+            arrow.SetValue(TextBlock.TextProperty, "\uE76C");
+            arrow.SetValue(TextBlock.FontFamilyProperty, new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets, Segoe UI Symbol"));
+            arrow.SetValue(TextBlock.FontSizeProperty, 9.0);
+            arrow.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
+            arrow.SetValue(TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Right);
+            arrow.SetValue(TextBlock.OpacityProperty, 0.6);
+            arrow.SetValue(TextBlock.ForegroundProperty, isDark ? Brushes.White : Brushes.Black);
+            grid.AppendChild(arrow);
+
+            var popup = new FrameworkElementFactory(typeof(Popup), "PART_Popup");
+            popup.SetValue(Popup.PlacementProperty, PlacementMode.Right);
+            popup.SetValue(Popup.AllowsTransparencyProperty, true);
+            popup.SetValue(Popup.FocusableProperty, false);
+            popup.SetValue(Popup.HorizontalOffsetProperty, -2.0);
+            popup.SetValue(Popup.VerticalOffsetProperty, -4.0);
+            popup.SetBinding(Popup.IsOpenProperty, new Binding("IsSubmenuOpen")
+            {
+                RelativeSource = new RelativeSource(RelativeSourceMode.TemplatedParent)
+            });
+
+            var subBorder = new FrameworkElementFactory(typeof(Border));
+            subBorder.SetValue(Border.BackgroundProperty, isDark ? new SolidColorBrush(Color.FromArgb(242, 32, 32, 32)) : new SolidColorBrush(Color.FromArgb(245, 252, 252, 252)));
+            subBorder.SetValue(Border.BorderBrushProperty, isDark ? new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(30, 0, 0, 0)));
+            subBorder.SetValue(Border.BorderThicknessProperty, new Thickness(1));
+            subBorder.SetValue(Border.CornerRadiusProperty, new CornerRadius(8));
+            subBorder.SetValue(Border.PaddingProperty, new Thickness(4));
+            subBorder.SetValue(Border.SnapsToDevicePixelsProperty, true);
+
+            var dropShadow = new System.Windows.Media.Effects.DropShadowEffect
+            {
+                BlurRadius = 14,
+                ShadowDepth = 3,
+                Direction = 270,
+                Color = Colors.Black,
+                Opacity = isDark ? 0.45 : 0.15
+            };
+            subBorder.SetValue(UIElement.EffectProperty, dropShadow);
+
+            var itemsPresenter = new FrameworkElementFactory(typeof(ItemsPresenter));
+            subBorder.AppendChild(itemsPresenter);
+            popup.AppendChild(subBorder);
+
+            grid.AppendChild(popup);
+            border.AppendChild(grid);
+            template.VisualTree = border;
+
+            var highlightTrigger = new Trigger { Property = MenuItem.IsHighlightedProperty, Value = true };
+            highlightTrigger.Setters.Add(new Setter(
+                Border.BackgroundProperty,
+                isDark ? new SolidColorBrush(Color.FromArgb(32, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(16, 0, 0, 0)),
+                "Bd"));
+            template.Triggers.Add(highlightTrigger);
+
+            var submenuOpenTrigger = new Trigger { Property = MenuItem.IsSubmenuOpenProperty, Value = true };
+            submenuOpenTrigger.Setters.Add(new Setter(
+                Border.BackgroundProperty,
+                isDark ? new SolidColorBrush(Color.FromArgb(32, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(16, 0, 0, 0)),
+                "Bd"));
+            template.Triggers.Add(submenuOpenTrigger);
+
+            style.Setters.Add(new Setter(Control.TemplateProperty, template));
+            style.Setters.Add(new Setter(Control.ForegroundProperty, isDark ? Brushes.White : new SolidColorBrush(Color.FromRgb(26, 26, 26))));
+            style.Setters.Add(new Setter(Control.FontFamilyProperty, new FontFamily("Segoe UI Variable Text, Segoe UI, sans-serif")));
+            style.Setters.Add(new Setter(Control.FontSizeProperty, 12.0));
+            style.Setters.Add(new Setter(FrameworkElement.CursorProperty, Cursors.Hand));
+
+            return style;
         }
 
         private MenuItem CreateStyledMenuItem(string text, Style style, bool isCheckable = false, bool isChecked = false)
@@ -1014,3 +1278,4 @@ namespace OmniHidTaskbar.UI
         }
     }
 }
+

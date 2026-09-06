@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -25,6 +25,7 @@ namespace OmniHidTaskbar.UI
         private readonly OverlayWindow _owner;
         private readonly Border _rootBorder;
         private readonly StackPanel _cardsStack;
+        private List<TaskbarDeviceState> _currentDevices = new List<TaskbarDeviceState>();
 
         // Settings view state
         private readonly Grid _containerGrid;
@@ -244,10 +245,13 @@ namespace OmniHidTaskbar.UI
 
         public void UpdateData(List<TaskbarDeviceState> devices)
         {
+            var visible = _owner != null ? _owner.GetVisibleDevices(devices) : devices;
+            _currentDevices = visible != null ? new List<TaskbarDeviceState>(visible) : new List<TaskbarDeviceState>();
+
             _cardsStack.Children.Clear();
             bool isDark = _owner != null ? _owner.IsDarkTheme : true;
 
-            if (devices == null || devices.Count == 0)
+            if (_currentDevices.Count == 0)
             {
                 var emptyPanel = new StackPanel
                 {
@@ -276,9 +280,9 @@ namespace OmniHidTaskbar.UI
                 return;
             }
 
-            for (int i = 0; i < devices.Count; i++)
+            for (int i = 0; i < _currentDevices.Count; i++)
             {
-                var dev = devices[i];
+                var dev = _currentDevices[i];
                 if (i > 0)
                 {
                     // Separator between device cards
@@ -293,6 +297,11 @@ namespace OmniHidTaskbar.UI
                 }
 
                 _cardsStack.Children.Add(BuildDeviceCard(dev, isDark));
+            }
+
+            if (this.IsVisible)
+            {
+                this.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(UpdateClampedPosition));
             }
         }
 
@@ -390,24 +399,33 @@ namespace OmniHidTaskbar.UI
                     Height = 4,
                     Margin = new Thickness(0, 0, 0, 3)
                 };
+
+                int pct = Math.Max(0, Math.Min(100, dev.BatteryPercent));
+                progressBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(pct, GridUnitType.Star) });
+                progressBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(100 - pct, GridUnitType.Star) });
+
                 var barBg = new Border
                 {
                     CornerRadius = new CornerRadius(2),
                     Background = isDark ? new SolidColorBrush(Color.FromArgb(35, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(20, 0, 0, 0))
                 };
-                double maxBarWidth = 190.0;
-                double fillWidth = Math.Max(0, Math.Min(maxBarWidth, maxBarWidth * (dev.BatteryPercent / 100.0)));
-                var barFill = new Border
-                {
-                    CornerRadius = new CornerRadius(2),
-                    Background = dev.IsCharging ?
-                        new SolidColorBrush(Color.FromRgb(30, 215, 96)) :
-                        (dev.BatteryPercent <= 20 ? new SolidColorBrush(Color.FromRgb(225, 40, 40)) : (isDark ? Brushes.White : new SolidColorBrush(Color.FromRgb(26, 26, 26)))),
-                    HorizontalAlignment = HorizontalAlignment.Left,
-                    Width = fillWidth
-                };
+                Grid.SetColumnSpan(barBg, 2);
                 progressBar.Children.Add(barBg);
-                progressBar.Children.Add(barFill);
+
+                if (pct > 0)
+                {
+                    var barFill = new Border
+                    {
+                        CornerRadius = new CornerRadius(2),
+                        Background = dev.IsCharging ?
+                            new SolidColorBrush(Color.FromRgb(30, 215, 96)) :
+                            (dev.BatteryPercent <= 20 ? new SolidColorBrush(Color.FromRgb(225, 40, 40)) : (isDark ? Brushes.White : new SolidColorBrush(Color.FromRgb(26, 26, 26)))),
+                        HorizontalAlignment = HorizontalAlignment.Stretch
+                    };
+                    Grid.SetColumn(barFill, 0);
+                    progressBar.Children.Add(barFill);
+                }
+
                 infoPanel.Children.Add(progressBar);
             }
 
@@ -544,7 +562,14 @@ namespace OmniHidTaskbar.UI
                     DwmHelper.SetDarkMode(hwnd, isDark);
                 }
 
-                if (_owner != null) UpdateData(_owner.LatestDevices);
+                if (_owner != null)
+                {
+                    UpdateData(_owner.VisibleDevices);
+                }
+                else if (_currentDevices != null)
+                {
+                    UpdateData(_currentDevices);
+                }
             }
             catch { }
         }
@@ -624,9 +649,12 @@ namespace OmniHidTaskbar.UI
         {
             try
             {
-                UpdateData(devices);
                 bool isDark = _owner != null ? _owner.IsDarkTheme : true;
                 UpdateTheme(isDark);
+                if (devices != null)
+                {
+                    UpdateData(devices);
+                }
 
                 _settingsView.Visibility = Visibility.Collapsed;
                 _statusFeedbackText.Visibility = Visibility.Collapsed;

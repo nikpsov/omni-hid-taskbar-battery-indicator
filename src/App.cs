@@ -1,8 +1,15 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Windows;
+using System.Reflection;
 using OmniHidTaskbar.Core;
 using OmniHidTaskbar.UI;
+
+[assembly: AssemblyTitle("OmniHID Taskbar Battery Indicator")]
+[assembly: AssemblyDescription("Universal Taskbar & Fluent Flyout Battery Monitor for Gaming Peripherals")]
+[assembly: AssemblyVersion("0.0.2.0")]
+[assembly: AssemblyFileVersion("0.0.2.0")]
+[assembly: AssemblyInformationalVersion("0.0.2")]
 
 namespace OmniHidTaskbar
 {
