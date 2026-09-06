@@ -7,14 +7,24 @@ using OmniHidTaskbar.UI;
 
 [assembly: AssemblyTitle("OmniHID Taskbar Battery Indicator")]
 [assembly: AssemblyDescription("Universal Taskbar & Fluent Flyout Battery Monitor for Gaming Peripherals")]
-[assembly: AssemblyVersion("0.0.2.0")]
-[assembly: AssemblyFileVersion("0.0.2.0")]
-[assembly: AssemblyInformationalVersion("0.0.2")]
+[assembly: AssemblyVersion("0.0.3.0")]
+[assembly: AssemblyFileVersion("0.0.3.0")]
+[assembly: AssemblyInformationalVersion("0.0.3")]
 
 namespace OmniHidTaskbar
 {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Application Entry Point
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Represents the main WPF application instance and execution lifecycle entry point.
+    /// </summary>
     public class App : Application
     {
+        /// <summary>
+        /// Main application entry point requiring a single-threaded apartment (STA) state for WPF and Win32 interop.
+        /// </summary>
         [STAThread]
         public static void Main()
         {

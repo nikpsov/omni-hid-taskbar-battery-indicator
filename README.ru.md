@@ -2,14 +2,15 @@
 
 <div align="center">
 
-[![Платформа](https://img.shields.io/badge/Платформа-Windows%2010%20%7C%2011-0078D6?style=flat-square&logo=windows)](https://microsoft.com)
-[![Среда](https://img.shields.io/badge/.NET-Framework%204.8-512BD4?style=flat-square&logo=dotnet)](#)
-[![Движок](https://img.shields.io/badge/Движок-OmniHID.Core-2ea44f?style=flat-square)](https://github.com/nikpsov/omni-hid)
-[![Лицензия](https://img.shields.io/badge/Лицензия-MIT-yellow.svg?style=flat-square)](LICENSE)
+[English](README.md) | **Русский**
 
-**Сверхлегкий виджет панели задач Windows и окно Fluent Flyout для беспроводных устройств.**
+[![Платформа](https://img.shields.io/badge/платформа-Windows%2010%20%7C%2011-0078D6.svg?style=flat-square&logo=windows)](https://microsoft.com)
+[![Среда выполнения](https://img.shields.io/badge/.NET-Framework%204.8-512BD4.svg?style=flat-square&logo=dotnet)](#)
+[![Зависимости](https://img.shields.io/badge/зависимости-Ноль%20(Native%20Win32)-brightgreen.svg?style=flat-square)](https://github.com/)
+[![Движок](https://img.shields.io/badge/движок-OmniHID.Core-2ea44f.svg?style=flat-square)](https://github.com/nikpsov/omni-hid)
+[![Лицензия](https://img.shields.io/badge/лицензия-MIT-blue.svg?style=flat-square)](LICENSE)
 
-[English](README.md) • [Русский](README.ru.md)
+*Сверхлегкий виджет панели задач Windows и окно Fluent Flyout для беспроводных устройств на базе движка [OmniHID](https://github.com/nikpsov/omni-hid) (автономный UI — установка самого движка не требуется).*
 
 <br/>
 
@@ -21,12 +22,14 @@
 
 ## Обзор
 
-**OmniHID Taskbar Battery Indicator** встраивается в панель задач Windows рядом с системным треем и отображает заряд беспроводных устройств в реальном времени (`🎧 85%  🖱️ 92%`).
+**OmniHID Taskbar Battery Indicator** — это самостоятельный графический интерфейс (UI) на базе движка и библиотеки телеметрии [**OmniHID**](https://github.com/nikpsov/omni-hid) (`OmniHid.Core`). Приложение встраивается в панель задач Windows рядом с системным треем и отображает заряд беспроводных устройств в реальном времени (`🎧 85%  🖱️ 92%`).
+
+> **Без лишней настройки**: Движок телеметрии уже встроен непосредственно в приложение. Отдельная установка самого движка OmniHID, консольной утилиты или драйверов не требуется — всё работает «из коробки» (в виде единого портативного EXE или инсталлятора).
 
 Клик по виджету открывает окно **Fluent Flyout** в стиле Windows 11 со статусом зарядки (`⚡`), оставшимся временем работы и напряжением аккумулятора.
 
 - **Сверхлегкий:** Потребляет ~15 МБ RAM и ~0% CPU (заменяет 500+ МБ вендорного софта вроде G HUB, Synapse и iCUE).
-- **0 зависимостей:** Чистый C# (.NET 4.8) и нативные Win32 HID API — без C++ библиотек и фоновых служб.
+- **0 зависимостей:** Чистый C# (.NET 4.8) и нативные Win32 HID API — автономный исполняемый файл со встроенным движком OmniHID, без фоновых служб.
 - **Не мешает в играх:** Автоматически скрывается в полноэкранных играх и видео.
 - **Smart Dual-Mode:** Определяет зарядку по кабелю без дублирования устройств.
 - **Уведомления:** Предупреждает системным тостом при разряде до ≤ 20%.
@@ -102,4 +105,4 @@ build.bat
 
 ## Лицензия
 
-[MIT](LICENSE) © 2026 [Никита Пестрецов](https://github.com/nikpsov)
+OmniHID Taskbar Battery Indicator распространяется под открытой лицензией [MIT](LICENSE).

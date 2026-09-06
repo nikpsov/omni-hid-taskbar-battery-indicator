@@ -6,29 +6,88 @@ using Microsoft.Win32;
 
 namespace OmniHidTaskbar.Core
 {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Application Configuration Model
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Configuration model representing user preferences, display styles,
+    /// polling intervals, and device filter lists persisted in <c>settings.json</c>.
+    /// </summary>
     public class AppSettings
     {
-        public int DisplayStyle { get; set; } // 0 = Percent, 1 = Glyphs
+        /// <summary>
+        /// Gets or sets the taskbar rendering mode: 0 = Battery percentage (e.g. 85%), 1 = Glyph only.
+        /// </summary>
+        public int DisplayStyle { get; set; }
+
+        /// <summary>
+        /// Gets or sets the visual representation mode: 0 = Floating taskbar overlay widget, 1 = System tray icon only.
+        /// </summary>
+        public int DisplayMode { get; set; }
+
+        /// <summary>
+        /// Gets or sets whether the taskbar overlay automatically hides when all devices are sleeping or disconnected.
+        /// </summary>
         public bool HideWhenDisconnected { get; set; }
+
+        /// <summary>
+        /// Gets or sets whether the application launches automatically on Windows logon.
+        /// </summary>
         public bool RunOnStartup { get; set; }
+
+        /// <summary>
+        /// Gets or sets the timer frequency in seconds between peripheral telemetry queries.
+        /// </summary>
         public int PollIntervalSeconds { get; set; }
+
+        /// <summary>
+        /// Gets or sets the collection of peripheral model names or identifiers explicitly hidden by the user.
+        /// </summary>
         public List<string> HiddenDevices { get; set; }
 
+        /// <summary>
+        /// Gets or sets the ordered collection of device identifiers for custom display ordering.
+        /// </summary>
+        public List<string> DeviceOrder { get; set; }
+
+        /// <summary>
+        /// Gets or sets user-defined friendly alias names mapped by unique device identifier.
+        /// </summary>
+        public Dictionary<string, string> CustomDeviceNames { get; set; }
+
+        /// <summary>
+        /// Initializes a new instance of <see cref="AppSettings"/> with default options.
+        /// </summary>
         public AppSettings()
         {
             DisplayStyle = 0;
+            DisplayMode = 0;
             HideWhenDisconnected = true;
             RunOnStartup = false;
             PollIntervalSeconds = 15;
             HiddenDevices = new List<string>();
+            DeviceOrder = new List<string>();
+            CustomDeviceNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Settings Persistence & File Manager
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Singleton manager responsible for loading, parsing, and persisting application configuration.
+    /// Supports zero-dependency portable local JSON, %AppData% fallback, and Windows Run registry integration.
+    /// </summary>
     public class SettingsManager
     {
         private static SettingsManager _instance;
         private static readonly object _instanceLock = new object();
 
+        /// <summary>
+        /// Gets the global singleton instance of <see cref="SettingsManager"/>.
+        /// </summary>
         public static SettingsManager Instance
         {
             get
@@ -48,6 +107,9 @@ namespace OmniHidTaskbar.Core
         private AppSettings _settings;
         private string _activeSettingsFilePath;
 
+        /// <summary>
+        /// Gets the active in-memory settings snapshot, loading it from disk upon first access.
+        /// </summary>
         public AppSettings Current
         {
             get
@@ -63,22 +125,49 @@ namespace OmniHidTaskbar.Core
             }
         }
 
+        /// <summary>
+        /// Forces a reload of settings from persistent storage.
+        /// </summary>
+        /// <returns>Freshly reloaded <see cref="AppSettings"/> instance.</returns>
+        public AppSettings Reload()
+        {
+            lock (_lock)
+            {
+                _settings = LoadInternal();
+                return _settings;
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Configuration Paths & Loading
+        // ═══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Gets the absolute filepath to <c>settings.json</c> inside the application binary directory.
+        /// </summary>
         private string GetProgramDirFilePath()
         {
             return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json");
         }
 
+        /// <summary>
+        /// Gets the absolute filepath to <c>settings.json</c> inside user %AppData%\OmniHidTaskbar.
+        /// </summary>
         private string GetAppDataFilePath()
         {
             string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "OmniHidTaskbar");
             return Path.Combine(folder, "settings.json");
         }
 
+        /// <summary>
+        /// Loads settings with portable priority: Program directory first, then %AppData%, then Registry migration.
+        /// </summary>
+        /// <returns>A populated <see cref="AppSettings"/> instance.</returns>
         private AppSettings LoadInternal()
         {
             AppSettings settings = new AppSettings();
 
-            // 1. Try reading from Program Directory (preferred by user)
+            // 1. Try reading from Program Directory (preferred for portable zero-install mode)
             string localPath = GetProgramDirFilePath();
             if (File.Exists(localPath))
             {
@@ -90,7 +179,7 @@ namespace OmniHidTaskbar.Core
                 }
             }
 
-            // 2. Fallback to AppData
+            // 2. Fallback to AppData (standard Windows installation mode)
             string appDataPath = GetAppDataFilePath();
             if (File.Exists(appDataPath))
             {
@@ -102,7 +191,7 @@ namespace OmniHidTaskbar.Core
                 }
             }
 
-            // 3. Fallback to Windows Registry (if migrating from old version)
+            // 3. Fallback to Windows Registry (legacy migration)
             try
             {
                 using (var key = Registry.CurrentUser.OpenSubKey(@"Software\OmniHidTaskbar"))
@@ -136,7 +225,7 @@ namespace OmniHidTaskbar.Core
             }
             catch { }
 
-            // 3. If no file existed, create default settings.json in program directory
+            // 4. If no file existed, create default settings.json in program directory
             if (!File.Exists(localPath) && !File.Exists(appDataPath))
             {
                 try
@@ -151,16 +240,25 @@ namespace OmniHidTaskbar.Core
             return settings;
         }
 
+        /// <summary>
+        /// Reads and parses an existing JSON configuration file into the target <see cref="AppSettings"/> instance.
+        /// </summary>
+        /// <param name="path">Absolute path to the JSON file.</param>
+        /// <param name="target">Target settings object to populate.</param>
+        /// <returns><c>true</c> if successfully read; otherwise <c>false</c>.</returns>
         private bool TryReadFile(string path, AppSettings target)
         {
             try
             {
                 string json = File.ReadAllText(path, Encoding.UTF8);
                 target.DisplayStyle = ParseIntField(json, "DisplayStyle", target.DisplayStyle);
+                target.DisplayMode = ParseIntField(json, "DisplayMode", target.DisplayMode);
                 target.HideWhenDisconnected = ParseBoolField(json, "HideWhenDisconnected", target.HideWhenDisconnected);
                 target.RunOnStartup = ParseBoolField(json, "RunOnStartup", target.RunOnStartup);
                 target.PollIntervalSeconds = ParseIntField(json, "PollIntervalSeconds", target.PollIntervalSeconds);
                 target.HiddenDevices = ParseStringArrayField(json, "HiddenDevices");
+                target.DeviceOrder = ParseStringArrayField(json, "DeviceOrder");
+                target.CustomDeviceNames = ParseStringDictionaryField(json, "CustomDeviceNames");
                 return true;
             }
             catch (Exception ex)
@@ -170,6 +268,14 @@ namespace OmniHidTaskbar.Core
             }
         }
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // Persistence & Registry Synchronization
+        // ═══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Persists the current configuration to disk (trying local directory first, then %AppData%),
+        /// and updates the Windows startup registry run key accordingly.
+        /// </summary>
         public void Save()
         {
             lock (_lock)
@@ -217,6 +323,10 @@ namespace OmniHidTaskbar.Core
             }
         }
 
+        /// <summary>
+        /// Adds or removes the application executable path from <c>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</c>.
+        /// </summary>
+        /// <param name="runOnStartup"><c>true</c> to register for auto-launch; <c>false</c> to deregister.</param>
         private void UpdateStartupRegistry(bool runOnStartup)
         {
             try
@@ -243,11 +353,21 @@ namespace OmniHidTaskbar.Core
             }
         }
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // Zero-Dependency JSON Serialization & Parsing Helpers
+        // ═══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Formats an <see cref="AppSettings"/> instance into a formatted JSON string without external libraries.
+        /// </summary>
+        /// <param name="s">Settings instance to serialize.</param>
+        /// <returns>Formatted JSON string.</returns>
         private static string SerializeToJson(AppSettings s)
         {
             var sb = new StringBuilder();
             sb.AppendLine("{");
             sb.AppendFormat("  \"DisplayStyle\": {0},\n", s.DisplayStyle);
+            sb.AppendFormat("  \"DisplayMode\": {0},\n", s.DisplayMode);
             sb.AppendFormat("  \"HideWhenDisconnected\": {0},\n", s.HideWhenDisconnected ? "true" : "false");
             sb.AppendFormat("  \"RunOnStartup\": {0},\n", s.RunOnStartup ? "true" : "false");
             sb.AppendFormat("  \"PollIntervalSeconds\": {0},\n", s.PollIntervalSeconds);
@@ -260,16 +380,128 @@ namespace OmniHidTaskbar.Core
                     string escaped = s.HiddenDevices[i].Replace("\\", "\\\\").Replace("\"", "\\\"");
                     sb.AppendFormat("    \"{0}\"{1}\n", escaped, i < s.HiddenDevices.Count - 1 ? "," : "");
                 }
-                sb.AppendLine("  ]");
+                sb.AppendLine("  ],");
             }
             else
             {
-                sb.AppendLine("]");
+                sb.AppendLine("],");
+            }
+
+            sb.Append("  \"DeviceOrder\": [");
+            if (s.DeviceOrder != null && s.DeviceOrder.Count > 0)
+            {
+                sb.AppendLine();
+                for (int i = 0; i < s.DeviceOrder.Count; i++)
+                {
+                    string escaped = s.DeviceOrder[i].Replace("\\", "\\\\").Replace("\"", "\\\"");
+                    sb.AppendFormat("    \"{0}\"{1}\n", escaped, i < s.DeviceOrder.Count - 1 ? "," : "");
+                }
+                sb.AppendLine("  ],");
+            }
+            else
+            {
+                sb.AppendLine("],");
+            }
+
+            sb.Append("  \"CustomDeviceNames\": {");
+            if (s.CustomDeviceNames != null && s.CustomDeviceNames.Count > 0)
+            {
+                sb.AppendLine();
+                int idx = 0;
+                int count = s.CustomDeviceNames.Count;
+                foreach (var kvp in s.CustomDeviceNames)
+                {
+                    string key = kvp.Key.Replace("\\", "\\\\").Replace("\"", "\\\"");
+                    string val = (kvp.Value ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"");
+                    sb.AppendFormat("    \"{0}\": \"{1}\"{2}\n", key, val, idx < count - 1 ? "," : "");
+                    idx++;
+                }
+                sb.AppendLine("  }");
+            }
+            else
+            {
+                sb.AppendLine("}");
             }
             sb.AppendLine("}");
             return sb.ToString();
         }
 
+        /// <summary>
+        /// Parses a string dictionary ({ "key": "value", ... }) from raw JSON text.
+        /// </summary>
+        /// <param name="json">Raw JSON payload.</param>
+        /// <param name="fieldName">Field name identifier.</param>
+        /// <returns>Dictionary containing parsed key-value pairs.</returns>
+        private static Dictionary<string, string> ParseStringDictionaryField(string json, string fieldName)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                string search = "\"" + fieldName + "\":";
+                int idx = json.IndexOf(search, StringComparison.OrdinalIgnoreCase);
+                if (idx < 0) return result;
+                idx += search.Length;
+
+                int openBrace = json.IndexOf('{', idx);
+                if (openBrace < 0) return result;
+
+                int closeBrace = json.IndexOf('}', openBrace);
+                if (closeBrace < 0) return result;
+
+                int pos = openBrace + 1;
+                while (pos < closeBrace)
+                {
+                    int kQuoteStart = json.IndexOf('"', pos);
+                    if (kQuoteStart < 0 || kQuoteStart >= closeBrace) break;
+
+                    int kQuoteEnd = kQuoteStart + 1;
+                    while (kQuoteEnd < closeBrace)
+                    {
+                        if (json[kQuoteEnd] == '"' && json[kQuoteEnd - 1] != '\\')
+                            break;
+                        kQuoteEnd++;
+                    }
+                    if (kQuoteEnd >= closeBrace) break;
+
+                    string key = json.Substring(kQuoteStart + 1, kQuoteEnd - kQuoteStart - 1)
+                        .Replace("\\\"", "\"").Replace("\\\\", "\\");
+
+                    int colon = json.IndexOf(':', kQuoteEnd);
+                    if (colon < 0 || colon >= closeBrace) break;
+
+                    int vQuoteStart = json.IndexOf('"', colon);
+                    if (vQuoteStart < 0 || vQuoteStart >= closeBrace) break;
+
+                    int vQuoteEnd = vQuoteStart + 1;
+                    while (vQuoteEnd < closeBrace)
+                    {
+                        if (json[vQuoteEnd] == '"' && json[vQuoteEnd - 1] != '\\')
+                            break;
+                        vQuoteEnd++;
+                    }
+                    if (vQuoteEnd >= closeBrace) break;
+
+                    string val = json.Substring(vQuoteStart + 1, vQuoteEnd - vQuoteStart - 1)
+                        .Replace("\\\"", "\"").Replace("\\\\", "\\");
+
+                    if (!string.IsNullOrWhiteSpace(key))
+                    {
+                        result[key.Trim()] = val.Trim();
+                    }
+
+                    pos = vQuoteEnd + 1;
+                }
+            }
+            catch { }
+            return result;
+        }
+
+        /// <summary>
+        /// Parses a string array field from raw JSON text.
+        /// </summary>
+        /// <param name="json">Raw JSON payload.</param>
+        /// <param name="fieldName">Field name identifier.</param>
+        /// <returns>Extracted list of string items.</returns>
         private static List<string> ParseStringArrayField(string json, string fieldName)
         {
             var result = new List<string>();
@@ -316,6 +548,13 @@ namespace OmniHidTaskbar.Core
             return result;
         }
 
+        /// <summary>
+        /// Extracts an integer value for a given field from raw JSON text.
+        /// </summary>
+        /// <param name="json">Raw JSON string.</param>
+        /// <param name="fieldName">Field name identifier.</param>
+        /// <param name="defaultValue">Default value if not found or unparseable.</param>
+        /// <returns>Parsed integer or default value.</returns>
         private static int ParseIntField(string json, string fieldName, int defaultValue)
         {
             try
@@ -337,6 +576,13 @@ namespace OmniHidTaskbar.Core
             return defaultValue;
         }
 
+        /// <summary>
+        /// Extracts a boolean value for a given field from raw JSON text.
+        /// </summary>
+        /// <param name="json">Raw JSON string.</param>
+        /// <param name="fieldName">Field name identifier.</param>
+        /// <param name="defaultValue">Default value if not found or unparseable.</param>
+        /// <returns>Parsed boolean or default value.</returns>
         private static bool ParseBoolField(string json, string fieldName, bool defaultValue)
         {
             try

@@ -1,89 +1,66 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
-using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using OmniHidTaskbar.Core;
 using OmniHid.Core;
 using OmniHid.Core.Abstractions;
+using Brush = System.Windows.Media.Brush;
+using Brushes = System.Windows.Media.Brushes;
+using Color = System.Windows.Media.Color;
+using FontFamily = System.Windows.Media.FontFamily;
+using Point = System.Windows.Point;
 
 namespace OmniHidTaskbar.UI
 {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Taskbar Overlay Widget Window
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Frameless overlay window docked dynamically beside the Windows system tray.
+    /// Matches Windows 11 SystemTray native visual styling, tracks tray and taskbar running tab boundaries,
+    /// dynamically avoids collisions with expanding application tabs, and hosts the interactive Fluent Flyout.
+    /// </summary>
     public class OverlayWindow : Window
     {
-        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-        static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
-
-        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-        static extern IntPtr FindWindowEx(IntPtr parentHandle, IntPtr childAfter, string className, string windowTitle);
-
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-
-        [DllImport("user32.dll")]
-        static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-
-        delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
-
-        [DllImport("user32.dll")]
-        static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
-
-        [DllImport("user32.dll")]
-        static extern bool UnhookWinEvent(IntPtr hWinEventHook);
-
-        const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
-        const uint EVENT_SYSTEM_MOVESIZEEND = 0x000B;
-        const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
-        const uint WINEVENT_OUTOFCONTEXT = 0;
-
-        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr")]
-        static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
-        [DllImport("user32.dll", EntryPoint = "SetWindowLong")]
-        static extern IntPtr SetWindowLong32(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
-        static IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong)
-        {
-            return IntPtr.Size == 8 ? SetWindowLongPtr64(hWnd, nIndex, dwNewLong) : SetWindowLong32(hWnd, nIndex, dwNewLong);
-        }
-        const int GWLP_HWNDPARENT = -8;
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct RECT
-        {
-            public int Left;
-            public int Top;
-            public int Right;
-            public int Bottom;
-        }
+        // ═══════════════════════════════════════════════════════════════════════
+        // State Fields & UI Elements
+        // ═══════════════════════════════════════════════════════════════════════
 
         private DispatcherTimer _positionTimer;
         private readonly StackPanel _mainStack;
         private readonly Border _containerBorder;
 
-        private WinEventDelegate _winEventProc;
+        private TaskbarHelper.WinEventDelegate _winEventProc;
         private IntPtr _hTaskbarHook;
         private IntPtr _hGlobalHook;
+        private IntPtr _hGlobalSizeHook;
         private FlyoutWindow _flyout;
 
         private System.Windows.Forms.NotifyIcon _notifyIcon;
         private System.Windows.Interop.HwndSource _hwndSource;
         private bool _hideWhenDisconnected = true;
         private bool _shouldHideOverlay = false;
-        private bool _runOnStartup = false;
         private bool? _lastIsSystemLight = null;
 
         private int _displayStyle = 0; // 0 = Percent, 1 = Icon
+        private bool _isCompactMode = false;
 
         private List<TaskbarDeviceState> _latestDevices = new List<TaskbarDeviceState>();
         private readonly Dictionary<string, TaskbarDeviceState> _allKnownDevices = new Dictionary<string, TaskbarDeviceState>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _warnedLowBatteryDeviceIds = new HashSet<string>();
 
+        private OmniManager _omniManager;
+
+        /// <summary>
+        /// Gets whether the current Windows system personalization preference is set to dark theme.
+        /// </summary>
         public bool IsDarkTheme
         {
             get
@@ -104,64 +81,70 @@ namespace OmniHidTaskbar.UI
             }
         }
 
+        /// <summary>
+        /// Gets the latest raw telemetry state snapshot for all enumerated peripheral devices in user-configured order.
+        /// </summary>
+        public List<TaskbarDeviceState> LatestDevices { get { return SortDevicesByCustomOrder(_latestDevices); } }
+
+        /// <summary>
+        /// Gets the filtered list of peripheral devices that are configured as visible by user settings in custom order.
+        /// </summary>
+        public List<TaskbarDeviceState> VisibleDevices { get { return GetVisibleDevices(SortDevicesByCustomOrder(_latestDevices)); } }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Constructor & Initialization
+        // ═══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Initializes a new instance of <see cref="OverlayWindow"/>, docks to taskbar,
+        /// and initializes OmniHID telemetry monitoring.
+        /// </summary>
         public OverlayWindow()
         {
             LoadSettings();
 
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
-            Background = new SolidColorBrush(Color.FromArgb(0, 0, 0, 0));
+            Background = HitTestTransparentBrush;
             Topmost = true;
             ShowInTaskbar = false;
 
-            Height = 36;
-            Width = 90; // Default width, auto-resized by children
+            // Height matches Windows 11 SystemTray.NormalButton (40 DIPs inside a 48px taskbar with 4px vertical margin)
+            Height = 40;
+            Width = 90;
 
             _mainStack = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
                 VerticalAlignment = VerticalAlignment.Center,
                 HorizontalAlignment = HorizontalAlignment.Center,
-                Background = Brushes.Transparent,
-                Margin = new Thickness(6, 0, 6, 0)
+                Background = HitTestTransparentBrush,
+                Margin = new Thickness(6, 0, 6, 0),
+                IsHitTestVisible = false
             };
 
+            // Container border styled according to Windows 11 SystemTray button design tokens
             _containerBorder = new Border
             {
                 CornerRadius = new CornerRadius(4),
-                Background = new SolidColorBrush(Color.FromArgb(1, 255, 255, 255)),
+                Background = HitTestTransparentBrush,
                 Cursor = Cursors.Hand,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch,
                 Margin = new Thickness(2, 0, 2, 0),
                 Child = _mainStack
             };
 
             Content = _containerBorder;
 
-            _containerBorder.MouseEnter += (s, e) =>
-            {
-                bool isLight = _lastIsSystemLight.GetValueOrDefault(false);
-                _containerBorder.Background = isLight ?
-                    new SolidColorBrush(Color.FromArgb(150, 255, 255, 255)) :
-                    new SolidColorBrush(Color.FromArgb(20, 255, 255, 255));
-            };
-            _containerBorder.MouseLeave += (s, e) =>
-            {
-                _containerBorder.Background = new SolidColorBrush(Color.FromArgb(1, 255, 255, 255));
-            };
-            this.PreviewMouseLeftButtonDown += (s, e) =>
-            {
-                bool isLight = _lastIsSystemLight.GetValueOrDefault(false);
-                _containerBorder.Background = isLight ?
-                    new SolidColorBrush(Color.FromArgb(200, 255, 255, 255)) :
-                    new SolidColorBrush(Color.FromArgb(35, 255, 255, 255));
-            };
-            this.PreviewMouseLeftButtonUp += (s, e) =>
-            {
-                bool isLight = _lastIsSystemLight.GetValueOrDefault(false);
-                _containerBorder.Background = isLight ?
-                    new SolidColorBrush(Color.FromArgb(150, 255, 255, 255)) :
-                    new SolidColorBrush(Color.FromArgb(20, 255, 255, 255));
-            };
+            // Fluent hover & pressed states matching Windows 11 taskbar native system tray buttons
+            _containerBorder.MouseEnter += (s, e) => ApplyContainerBackground(isHovered: true, isPressed: Mouse.LeftButton == MouseButtonState.Pressed);
+            _containerBorder.MouseLeave += (s, e) => { if (!this.IsMouseOver) ApplyContainerBackground(isHovered: false, isPressed: false); };
+            this.MouseEnter += (s, e) => ApplyContainerBackground(isHovered: true, isPressed: Mouse.LeftButton == MouseButtonState.Pressed);
+            this.MouseLeave += (s, e) => ApplyContainerBackground(isHovered: false, isPressed: false);
+            this.PreviewMouseLeftButtonDown += (s, e) => ApplyContainerBackground(isHovered: true, isPressed: true);
+            this.PreviewMouseLeftButtonUp += (s, e) => ApplyContainerBackground(isHovered: this.IsMouseOver, isPressed: false);
+
             this.MouseLeftButtonUp += (s, e) => ShowFlyout();
             this.MouseRightButtonUp += (s, e) => ShowContextMenu();
 
@@ -169,7 +152,7 @@ namespace OmniHidTaskbar.UI
 
             InitNotifyIcon();
 
-            // Subscribe to DeviceManager
+            // Subscribe to OmniHID core telemetry engine
             _omniManager = new OmniManager();
             _omniManager.RegisteredOnly = true;
             _omniManager.DevicesUpdated += OnOmniDevicesUpdated;
@@ -179,10 +162,10 @@ namespace OmniHidTaskbar.UI
             this.SourceInitialized += (s, e) =>
             {
                 var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-                IntPtr taskbar = FindWindow("Shell_TrayWnd", null);
+                IntPtr taskbar = TaskbarHelper.GetTaskbarHandle();
                 if (taskbar != IntPtr.Zero)
                 {
-                    SetWindowLongPtr(hwnd, GWLP_HWNDPARENT, taskbar);
+                    TaskbarHelper.SetWindowLongPtr(hwnd, TaskbarHelper.GWLP_HWNDPARENT, taskbar);
                 }
 
                 if (hwnd != IntPtr.Zero)
@@ -199,7 +182,8 @@ namespace OmniHidTaskbar.UI
                 SetupHooks();
                 UpdatePosition();
 
-                _positionTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
+                // High-priority 40ms timer (Normal priority) for instant (<1 frame) fullscreen & geometry synchronization
+                _positionTimer = new DispatcherTimer(DispatcherPriority.Normal, this.Dispatcher) { Interval = TimeSpan.FromMilliseconds(40) };
                 _positionTimer.Tick += (ts, te) => UpdatePosition();
                 _positionTimer.Start();
             };
@@ -215,13 +199,18 @@ namespace OmniHidTaskbar.UI
                 }
                 if (_hTaskbarHook != IntPtr.Zero)
                 {
-                    UnhookWinEvent(_hTaskbarHook);
+                    TaskbarHelper.UnhookWinEvent(_hTaskbarHook);
                     _hTaskbarHook = IntPtr.Zero;
                 }
                 if (_hGlobalHook != IntPtr.Zero)
                 {
-                    UnhookWinEvent(_hGlobalHook);
+                    TaskbarHelper.UnhookWinEvent(_hGlobalHook);
                     _hGlobalHook = IntPtr.Zero;
+                }
+                if (_hGlobalSizeHook != IntPtr.Zero)
+                {
+                    TaskbarHelper.UnhookWinEvent(_hGlobalSizeHook);
+                    _hGlobalSizeHook = IntPtr.Zero;
                 }
                 if (_notifyIcon != null)
                 {
@@ -236,24 +225,49 @@ namespace OmniHidTaskbar.UI
             };
         }
 
-        private OmniManager _omniManager;
+        private static readonly Brush HitTestTransparentBrush = CreateFrozenHitTestBrush();
 
-        public List<TaskbarDeviceState> LatestDevices { get { return _latestDevices; } }
-        public List<TaskbarDeviceState> VisibleDevices { get { return GetVisibleDevices(_latestDevices); } }
+        private static Brush CreateFrozenHitTestBrush()
+        {
+            var brush = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0));
+            brush.Freeze();
+            return brush;
+        }
 
+        /// <summary>
+        /// Applies theme-accurate Windows 11 Fluent hover/pressed translucent pills to the container border.
+        /// </summary>
+        private void ApplyContainerBackground(bool isHovered, bool isPressed)
+        {
+            bool isDark = !(_lastIsSystemLight.GetValueOrDefault(!IsDarkTheme));
+            if (!isHovered && !isPressed)
+            {
+                _containerBorder.Background = HitTestTransparentBrush;
+                return;
+            }
+
+            if (isPressed)
+            {
+                _containerBorder.Background = DwmHelper.GetTaskbarButtonPressedBrush(isDark);
+            }
+            else
+            {
+                _containerBorder.Background = DwmHelper.GetTaskbarButtonHoverBrush(isDark);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // OmniHID Telemetry Event Subscription & State Handling
+        // ═══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Callback executed when the OmniHID engine broadcasts updated peripheral battery telemetry.
+        /// Dispatches snapshot mapping and UI rendering to the WPF UI thread.
+        /// </summary>
+        /// <param name="devices">Read-only list of active OmniHID peripheral device abstractions.</param>
         private void OnOmniDevicesUpdated(IReadOnlyList<IOmniDevice> devices)
         {
             Logger.Log(string.Format("OmniHID update received: {0} device(s)", devices != null ? devices.Count : 0));
-            if (devices != null)
-            {
-                foreach (var d in devices)
-                {
-                    var tel = d.Telemetry;
-                    Logger.Log(string.Format("  Device: {0} [{1}] Connected={2}, Level={3}%, Charging={4}, State='{5}'",
-                        d.Name, d.Id, d.IsConnected, tel != null ? tel.LevelPercent : -1, tel != null && tel.IsCharging, tel != null ? tel.StateDescription : "Offline"));
-                }
-            }
-
             this.Dispatcher.BeginInvoke(new Action(() =>
             {
                 _latestDevices = devices != null ? devices.Select(TaskbarDeviceState.FromOmniDevice).ToList() : new List<TaskbarDeviceState>();
@@ -261,9 +275,13 @@ namespace OmniHidTaskbar.UI
                 {
                     foreach (var d in _latestDevices)
                     {
-                        if (d != null && !string.IsNullOrEmpty(d.Name))
+                        if (d != null)
                         {
-                            _allKnownDevices[d.Name] = d;
+                            string key = !string.IsNullOrEmpty(d.Id) ? d.Id : d.Name;
+                            if (!string.IsNullOrEmpty(key))
+                            {
+                                _allKnownDevices[key] = d;
+                            }
                         }
                     }
                 }
@@ -271,6 +289,110 @@ namespace OmniHidTaskbar.UI
             }));
         }
 
+        /// <summary>
+        /// Forces a re-render of current peripheral devices and refreshes the tray tooltip.
+        /// </summary>
+        public void RefreshWidgetState()
+        {
+            LoadSettings();
+            ApplyDevicesState(_latestDevices);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Device Ordering & Visibility Filtering Subsystem
+        // ═══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Sorts an input list of peripheral device snapshots according to the user-defined device order.
+        /// </summary>
+        /// <param name="devices">Source peripheral devices.</param>
+        /// <returns>Devices ordered according to settings.</returns>
+        public static List<TaskbarDeviceState> SortDevicesByCustomOrder(List<TaskbarDeviceState> devices)
+        {
+            if (devices == null || devices.Count <= 1) return devices ?? new List<TaskbarDeviceState>();
+            var order = SettingsManager.Instance.Current.DeviceOrder;
+            if (order == null || order.Count == 0) return devices;
+
+            return devices.OrderBy(d =>
+            {
+                if (d == null) return int.MaxValue;
+                int idx = -1;
+                if (!string.IsNullOrEmpty(d.Id))
+                {
+                    idx = order.FindIndex(o => string.Equals(o, d.Id, StringComparison.OrdinalIgnoreCase));
+                }
+                if (idx < 0 && !string.IsNullOrEmpty(d.Name))
+                {
+                    idx = order.FindIndex(o => string.Equals(o, d.Name, StringComparison.OrdinalIgnoreCase));
+                }
+                return idx >= 0 ? idx : int.MaxValue;
+            }).ToList();
+        }
+
+        /// <summary>
+        /// Updates the persistent user-defined device display ordering and refreshes the taskbar widgets.
+        /// </summary>
+        /// <param name="newOrder">Updated collection of device identifiers.</param>
+        public void UpdateDeviceOrder(List<string> newOrder)
+        {
+            if (newOrder != null)
+            {
+                SettingsManager.Instance.Current.DeviceOrder = new List<string>(newOrder);
+                SettingsManager.Instance.Save();
+                ApplyDevicesState(_latestDevices);
+            }
+        }
+
+        /// <summary>
+        /// Updates or clears a persistent custom alias name for a peripheral device.
+        /// </summary>
+        /// <param name="deviceId">Target device identifier.</param>
+        /// <param name="customName">Custom alias string or null/empty to revert to factory model name.</param>
+        public void SetDeviceCustomName(string deviceId, string customName)
+        {
+            if (string.IsNullOrEmpty(deviceId)) return;
+            var names = SettingsManager.Instance.Current.CustomDeviceNames;
+            if (names == null)
+            {
+                names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                SettingsManager.Instance.Current.CustomDeviceNames = names;
+            }
+
+            if (string.IsNullOrWhiteSpace(customName))
+            {
+                names.Remove(deviceId);
+            }
+            else
+            {
+                names[deviceId] = customName.Trim();
+            }
+
+            if (_latestDevices != null)
+            {
+                foreach (var d in _latestDevices)
+                {
+                    if (d != null && string.Equals(d.Id, deviceId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        d.CustomName = string.IsNullOrWhiteSpace(customName) ? null : customName.Trim();
+                    }
+                }
+            }
+
+            TaskbarDeviceState known;
+            if (_allKnownDevices.TryGetValue(deviceId, out known))
+            {
+                known.CustomName = string.IsNullOrWhiteSpace(customName) ? null : customName.Trim();
+            }
+
+            SettingsManager.Instance.Save();
+            ApplyDevicesState(_latestDevices);
+        }
+
+        /// <summary>
+        /// Determines whether a device is currently marked as hidden in user settings.
+        /// </summary>
+        /// <param name="nameOrId">Device model name or identifier.</param>
+        /// <returns><c>true</c> if hidden; otherwise <c>false</c>.</returns>
         public bool IsDeviceHidden(string nameOrId)
         {
             if (string.IsNullOrEmpty(nameOrId)) return false;
@@ -284,6 +406,11 @@ namespace OmniHidTaskbar.UI
             return false;
         }
 
+        /// <summary>
+        /// Evaluates whether a peripheral snapshot should be displayed in the taskbar and flyout.
+        /// </summary>
+        /// <param name="dev">Peripheral device state model.</param>
+        /// <returns><c>true</c> if device should be visible; otherwise <c>false</c>.</returns>
         public bool IsDeviceVisible(TaskbarDeviceState dev)
         {
             if (dev == null) return false;
@@ -291,23 +418,33 @@ namespace OmniHidTaskbar.UI
             if (hidden == null || hidden.Count == 0) return true;
             foreach (var h in hidden)
             {
-                if (!string.IsNullOrEmpty(dev.Name) && string.Equals(h.Trim(), dev.Name.Trim(), StringComparison.OrdinalIgnoreCase))
-                    return false;
                 if (!string.IsNullOrEmpty(dev.Id) && string.Equals(h.Trim(), dev.Id.Trim(), StringComparison.OrdinalIgnoreCase))
+                    return false;
+                if (!string.IsNullOrEmpty(dev.Name) && string.Equals(h.Trim(), dev.Name.Trim(), StringComparison.OrdinalIgnoreCase))
                     return false;
             }
             return true;
         }
 
+        /// <summary>
+        /// Filters an input list of peripheral states to include only user-visible devices.
+        /// </summary>
+        /// <param name="devices">Source peripheral state list.</param>
+        /// <returns>Filtered list of visible peripheral devices.</returns>
         public List<TaskbarDeviceState> GetVisibleDevices(List<TaskbarDeviceState> devices)
         {
             if (devices == null) return new List<TaskbarDeviceState>();
             return devices.Where(IsDeviceVisible).ToList();
         }
 
-        private void SetDeviceVisibility(string deviceName, bool isVisible)
+        /// <summary>
+        /// Toggles visibility for a specific device identifier or model name and persists the update to settings.
+        /// </summary>
+        /// <param name="idOrName">Peripheral unique identifier or model name.</param>
+        /// <param name="isVisible"><c>true</c> to show; <c>false</c> to hide.</param>
+        public void SetDeviceVisibility(string idOrName, bool isVisible)
         {
-            if (string.IsNullOrEmpty(deviceName)) return;
+            if (string.IsNullOrEmpty(idOrName)) return;
             var hidden = SettingsManager.Instance.Current.HiddenDevices;
             if (hidden == null)
             {
@@ -317,30 +454,46 @@ namespace OmniHidTaskbar.UI
 
             if (isVisible)
             {
-                hidden.RemoveAll(x => string.Equals(x.Trim(), deviceName.Trim(), StringComparison.OrdinalIgnoreCase));
+                hidden.RemoveAll(x => string.Equals(x.Trim(), idOrName.Trim(), StringComparison.OrdinalIgnoreCase));
             }
             else
             {
-                bool alreadyExists = hidden.Any(x => string.Equals(x.Trim(), deviceName.Trim(), StringComparison.OrdinalIgnoreCase));
+                bool alreadyExists = hidden.Any(x => string.Equals(x.Trim(), idOrName.Trim(), StringComparison.OrdinalIgnoreCase));
                 if (!alreadyExists)
                 {
-                    hidden.Add(deviceName.Trim());
+                    hidden.Add(idOrName.Trim());
                 }
             }
 
             SettingsManager.Instance.Save();
             ApplyDevicesState(_latestDevices);
+
+            if (_flyout != null && _flyout.IsVisible)
+            {
+                _flyout.UpdateData(GetVisibleDevices(SortDevicesByCustomOrder(_latestDevices)));
+            }
         }
 
+        // ═══════════════════════════════════════════════════════════════════════════
+        // Widget Rendering & State Application
+        // ═══════════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Rebuilds the visual layout of the overlay based on the provided list of device states,
+        /// handling multi-device spacing, offline placeholders, low-battery toast alerts, and flyout sync.
+        /// </summary>
+        /// <param name="devices">The latest snapshot of device states received from the telemetry manager.</param>
         private void ApplyDevicesState(List<TaskbarDeviceState> devices)
         {
             try
             {
                 _mainStack.Children.Clear();
                 bool isLight = !IsDarkTheme;
-                var themeBrush = isLight ? Brushes.Black : Brushes.White;
+                var themeBrush = DwmHelper.GetPrimaryTextBrush(!isLight);
+                bool isTrayOnly = SettingsManager.Instance.Current.DisplayMode == 1;
 
-                var visibleDevices = GetVisibleDevices(devices);
+                var orderedDevices = SortDevicesByCustomOrder(devices);
+                var visibleDevices = GetVisibleDevices(orderedDevices);
                 var targetDevices = _hideWhenDisconnected
                     ? visibleDevices.Where(d => d.IsConnected && d.BatteryPercent >= 0).ToList()
                     : visibleDevices;
@@ -354,10 +507,10 @@ namespace OmniHidTaskbar.UI
                         var dev = targetDevices[i];
                         if (i > 0)
                         {
-                            // Spacer between multiple devices
+                            // Spacing between multiple devices: tighter in compact mode
                             var spacer = new Border
                             {
-                                Width = 8,
+                                Width = _isCompactMode ? 5 : 8,
                                 Background = Brushes.Transparent
                             };
                             _mainStack.Children.Add(spacer);
@@ -381,11 +534,15 @@ namespace OmniHidTaskbar.UI
                         }
                     }
 
-                    // Adjust overlay width based on count of items
-                    this.Width = Math.Max(70, targetDevices.Count * 68 + 20);
-                    this.Visibility = IsForegroundFullscreen() ? Visibility.Hidden : Visibility.Visible;
+                    // Compute dynamic overlay width based on item count and compact/full state
+                    int itemSlotWidth = _isCompactMode ? 44 : (_displayStyle == 0 ? 58 : 46);
+                    this.Width = Math.Max(50, targetDevices.Count * itemSlotWidth + 16);
+                    bool isFullscreen = TaskbarHelper.IsForegroundFullscreen(new System.Windows.Interop.WindowInteropHelper(this).Handle, _flyout != null ? new System.Windows.Interop.WindowInteropHelper(_flyout).Handle : IntPtr.Zero);
+                    this.Visibility = (isTrayOnly || isFullscreen)
+                        ? Visibility.Hidden : Visibility.Visible;
 
                     UpdateTrayTooltip(targetDevices);
+                    UpdateDynamicTrayIcon(targetDevices, isLight);
                 }
                 else
                 {
@@ -426,13 +583,15 @@ namespace OmniHidTaskbar.UI
                     disconnectedGrid.Children.Add(crossText);
                     _mainStack.Children.Add(disconnectedGrid);
 
-                    this.Width = 46;
-                    this.Visibility = (_hideWhenDisconnected || IsForegroundFullscreen()) ? Visibility.Hidden : Visibility.Visible;
+                    this.Width = 44;
+                    bool isFullscreen = TaskbarHelper.IsForegroundFullscreen(new System.Windows.Interop.WindowInteropHelper(this).Handle, _flyout != null ? new System.Windows.Interop.WindowInteropHelper(_flyout).Handle : IntPtr.Zero);
+                    this.Visibility = (isTrayOnly || _hideWhenDisconnected || isFullscreen) ? Visibility.Hidden : Visibility.Visible;
 
                     if (_notifyIcon != null)
                     {
                         _notifyIcon.Text = "Device Battery: Disconnected";
                     }
+                    UpdateDynamicTrayIcon(null, isLight);
                 }
 
                 if (_flyout != null && _flyout.IsVisible)
@@ -442,9 +601,19 @@ namespace OmniHidTaskbar.UI
 
                 UpdatePosition();
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Logger.Log("Error in ApplyDevicesState: " + ex.Message);
+            }
         }
 
+        /// <summary>
+        /// Constructs a compact WPF visual element representing a single device's icon and battery state.
+        /// </summary>
+        /// <param name="dev">The device model state.</param>
+        /// <param name="themeBrush">The theme-appropriate foreground brush for text and outline glyphs.</param>
+        /// <param name="isLight">Flag indicating whether Windows is operating in light mode.</param>
+        /// <returns>A configured <see cref="FrameworkElement"/> ready to add to the main horizontal stack panel.</returns>
         private FrameworkElement BuildTaskbarDeviceWidget(TaskbarDeviceState dev, Brush themeBrush, bool isLight)
         {
             var stack = new StackPanel
@@ -459,10 +628,10 @@ namespace OmniHidTaskbar.UI
             {
                 Text = !string.IsNullOrEmpty(dev.IconGlyph) ? dev.IconGlyph : dev.GetDefaultIconGlyph(),
                 FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
-                FontSize = 15,
+                FontSize = _isCompactMode ? 13.5 : 15,
                 Foreground = themeBrush,
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 3, 0)
+                Margin = new Thickness(0, 0, _isCompactMode ? 1 : 3, 0)
             };
             stack.Children.Add(iconBlock);
 
@@ -473,7 +642,7 @@ namespace OmniHidTaskbar.UI
                 var battText = new TextBlock
                 {
                     FontFamily = new FontFamily("Segoe UI Variable Display, Segoe UI"),
-                    FontSize = 12.5,
+                    FontSize = _isCompactMode ? 11.5 : 12.5,
                     FontWeight = FontWeights.Normal,
                     Foreground = themeBrush,
                     VerticalAlignment = VerticalAlignment.Center,
@@ -488,7 +657,7 @@ namespace OmniHidTaskbar.UI
                     {
                         Text = "\uE945",
                         FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
-                        FontSize = 11,
+                        FontSize = _isCompactMode ? 10 : 11,
                         FontWeight = FontWeights.Bold,
                         Foreground = new SolidColorBrush(Color.FromRgb(30, 215, 96)),
                         VerticalAlignment = VerticalAlignment.Center,
@@ -528,16 +697,6 @@ namespace OmniHidTaskbar.UI
 
                     if (isColored)
                     {
-                        var outline = new TextBlock
-                        {
-                            FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
-                            FontSize = 16,
-                            Foreground = themeBrush,
-                            Text = dev.IsCharging ? "\uEBAB" : "\uEBA0",
-                            VerticalAlignment = VerticalAlignment.Center
-                        };
-                        battIconGrid.Children.Add(outline);
-
                         char fillChar = dev.IsCharging ? (char)(0xEBAB + levelIndex) : (char)(0xEBA0 + levelIndex);
                         var fill = new TextBlock
                         {
@@ -550,6 +709,16 @@ namespace OmniHidTaskbar.UI
                             VerticalAlignment = VerticalAlignment.Center
                         };
                         battIconGrid.Children.Add(fill);
+
+                        var outline = new TextBlock
+                        {
+                            FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                            FontSize = 16,
+                            Foreground = themeBrush,
+                            Text = dev.IsCharging ? "\uEBAB" : "\uEBA0",
+                            VerticalAlignment = VerticalAlignment.Center
+                        };
+                        battIconGrid.Children.Add(outline);
                     }
                     else
                     {
@@ -571,6 +740,10 @@ namespace OmniHidTaskbar.UI
             return stack;
         }
 
+        /// <summary>
+        /// Updates the hover tooltip text of the system tray notification icon, truncating to 63 characters.
+        /// </summary>
+        /// <param name="devices">The list of active devices whose summaries should be displayed.</param>
         private void UpdateTrayTooltip(List<TaskbarDeviceState> devices)
         {
             if (_notifyIcon == null) return;
@@ -582,15 +755,18 @@ namespace OmniHidTaskbar.UI
 
             string tip = string.Join(" | ", devices.Select(d =>
                 (d.IsConnected && d.BatteryPercent >= 0)
-                    ? string.Format("{0}: {1}%{2}", d.Name, d.BatteryPercent, d.IsCharging ? " ⚡" : "")
-                    : string.Format("{0}: Disconnected", d.Name)));
+                    ? string.Format("{0}: {1}%{2}", d.DisplayName, d.BatteryPercent, d.IsCharging ? " \u26A1" : "")
+                    : string.Format("{0}: Disconnected", d.DisplayName)));
             if (tip.Length > 63) tip = tip.Substring(0, 63);
             _notifyIcon.Text = tip;
         }
 
-        private void ShowFlyout()
+        /// <summary>
+        /// Toggles the visibility of the Fluent flyout details popup window anchored above the taskbar widget.
+        /// </summary>
+        public void ShowFlyout()
         {
-            var visibleDevices = GetVisibleDevices(_latestDevices);
+            var visibleDevices = GetVisibleDevices(SortDevicesByCustomOrder(_latestDevices));
             if (_flyout == null)
             {
                 _flyout = new FlyoutWindow(this, visibleDevices);
@@ -606,531 +782,198 @@ namespace OmniHidTaskbar.UI
             }
         }
 
+        /// <summary>
+        /// Displays an interactive toast alert notifying the user of critically low battery level on a device.
+        /// </summary>
+        /// <param name="dev">The device whose battery has fallen below the critical threshold.</param>
         private void ShowLowBatteryToast(TaskbarDeviceState dev)
         {
-            var notif = new NotificationWindow("Low Battery Alert", string.Format("{0}% remaining on {1}.", dev.BatteryPercent, dev.Name));
+            var notif = new NotificationWindow("Low Battery Alert", string.Format("{0}% remaining on {1}.", dev.BatteryPercent, dev.DisplayName));
             notif.Show();
         }
 
-        private static Style CreateContextMenuStyle(bool isDark)
+        /// <summary>
+        /// Displays the settings and configuration context menu either anchored above the taskbar widget
+        /// or floating at cursor coordinates when triggered from the system tray icon.
+        /// </summary>
+        /// <param name="fromTray">Flag indicating whether the menu was opened from the system tray notification icon.</param>
+        public void ShowContextMenu(bool fromTray = false)
         {
-            var style = new Style(typeof(ContextMenu));
-            var template = new ControlTemplate(typeof(ContextMenu));
-
-            var border = new FrameworkElementFactory(typeof(Border));
-            border.SetValue(Border.BackgroundProperty, isDark ? new SolidColorBrush(Color.FromArgb(242, 32, 32, 32)) : new SolidColorBrush(Color.FromArgb(245, 252, 252, 252)));
-            border.SetValue(Border.BorderBrushProperty, isDark ? new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(30, 0, 0, 0)));
-            border.SetValue(Border.BorderThicknessProperty, new Thickness(1));
-            border.SetValue(Border.CornerRadiusProperty, new CornerRadius(8));
-            border.SetValue(Border.PaddingProperty, new Thickness(4));
-            border.SetValue(Border.SnapsToDevicePixelsProperty, true);
-
-            var itemsPresenter = new FrameworkElementFactory(typeof(ItemsPresenter));
-            border.AppendChild(itemsPresenter);
-
-            template.VisualTree = border;
-            style.Setters.Add(new Setter(Control.TemplateProperty, template));
-
-            var dropShadow = new System.Windows.Media.Effects.DropShadowEffect
-            {
-                BlurRadius = 14,
-                ShadowDepth = 3,
-                Direction = 270,
-                Color = Colors.Black,
-                Opacity = isDark ? 0.45 : 0.15
-            };
-            style.Setters.Add(new Setter(UIElement.EffectProperty, dropShadow));
-
-            return style;
+            TaskbarContextMenu.Show(
+                owner: this,
+                fromTray: fromTray,
+                isDark: IsDarkTheme,
+                devicesList: _allKnownDevices.Values.ToList(),
+                onOpenFlyout: ShowFlyout,
+                onRefresh: () => { if (_omniManager != null) _omniManager.ForceRefresh(); }
+            );
         }
 
-        private static Style CreateMenuItemStyle(bool isDark)
-        {
-            var style = new Style(typeof(MenuItem));
-            var template = new ControlTemplate(typeof(MenuItem));
+        // ═══════════════════════════════════════════════════════════════════════════
+        // WinEvent Hooks & Geometry Updates
+        // ═══════════════════════════════════════════════════════════════════════════
 
-            var border = new FrameworkElementFactory(typeof(Border), "Bd");
-            border.SetValue(Border.CornerRadiusProperty, new CornerRadius(4));
-            border.SetValue(Border.BackgroundProperty, Brushes.Transparent);
-            border.SetValue(Border.PaddingProperty, new Thickness(8, 6, 12, 6));
-            border.SetValue(Border.MarginProperty, new Thickness(0, 1, 0, 1));
-            border.SetValue(Border.SnapsToDevicePixelsProperty, true);
-
-            var grid = new FrameworkElementFactory(typeof(Grid));
-
-            var col0 = new FrameworkElementFactory(typeof(ColumnDefinition));
-            col0.SetValue(ColumnDefinition.WidthProperty, new GridLength(20));
-            grid.AppendChild(col0);
-
-            var col1 = new FrameworkElementFactory(typeof(ColumnDefinition));
-            col1.SetValue(ColumnDefinition.WidthProperty, new GridLength(1, GridUnitType.Star));
-            grid.AppendChild(col1);
-
-            var checkGlyph = new FrameworkElementFactory(typeof(TextBlock), "CheckGlyph");
-            checkGlyph.SetValue(Grid.ColumnProperty, 0);
-            checkGlyph.SetValue(TextBlock.TextProperty, "\uE73E");
-            checkGlyph.SetValue(TextBlock.FontFamilyProperty, new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets, Segoe UI Symbol"));
-            checkGlyph.SetValue(TextBlock.FontSizeProperty, 11.0);
-            checkGlyph.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-            checkGlyph.SetValue(TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Left);
-            checkGlyph.SetValue(TextBlock.VisibilityProperty, Visibility.Collapsed);
-            checkGlyph.SetValue(TextBlock.ForegroundProperty, isDark ? new SolidColorBrush(Color.FromRgb(96, 205, 255)) : new SolidColorBrush(Color.FromRgb(0, 95, 184)));
-            grid.AppendChild(checkGlyph);
-
-            var cp = new FrameworkElementFactory(typeof(ContentPresenter), "HeaderHost");
-            cp.SetValue(Grid.ColumnProperty, 1);
-            cp.SetValue(ContentPresenter.ContentSourceProperty, "Header");
-            cp.SetValue(ContentPresenter.RecognizesAccessKeyProperty, true);
-            cp.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
-            grid.AppendChild(cp);
-
-            border.AppendChild(grid);
-            template.VisualTree = border;
-
-            var checkedTrigger = new Trigger { Property = MenuItem.IsCheckedProperty, Value = true };
-            checkedTrigger.Setters.Add(new Setter(UIElement.VisibilityProperty, Visibility.Visible, "CheckGlyph"));
-            template.Triggers.Add(checkedTrigger);
-
-            var highlightTrigger = new Trigger { Property = MenuItem.IsHighlightedProperty, Value = true };
-            highlightTrigger.Setters.Add(new Setter(
-                Border.BackgroundProperty,
-                isDark ? new SolidColorBrush(Color.FromArgb(32, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(16, 0, 0, 0)),
-                "Bd"));
-            template.Triggers.Add(highlightTrigger);
-
-            var pressedTrigger = new Trigger { Property = MenuItem.IsPressedProperty, Value = true };
-            pressedTrigger.Setters.Add(new Setter(
-                Border.BackgroundProperty,
-                isDark ? new SolidColorBrush(Color.FromArgb(20, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(26, 0, 0, 0)),
-                "Bd"));
-            template.Triggers.Add(pressedTrigger);
-
-            style.Setters.Add(new Setter(Control.TemplateProperty, template));
-            style.Setters.Add(new Setter(Control.ForegroundProperty, isDark ? Brushes.White : new SolidColorBrush(Color.FromRgb(26, 26, 26))));
-            style.Setters.Add(new Setter(Control.FontFamilyProperty, new FontFamily("Segoe UI Variable Text, Segoe UI, sans-serif")));
-            style.Setters.Add(new Setter(Control.FontSizeProperty, 12.0));
-            style.Setters.Add(new Setter(FrameworkElement.CursorProperty, Cursors.Hand));
-
-            return style;
-        }
-
-        private static Separator CreateStyledSeparator(bool isDark)
-        {
-            return new Separator
-            {
-                Margin = new Thickness(4, 3, 4, 3),
-                Height = 1,
-                Background = isDark ? new SolidColorBrush(Color.FromArgb(35, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(20, 0, 0, 0)),
-                BorderThickness = new Thickness(0)
-            };
-        }
-
-        private void ShowContextMenu(bool fromTray = false)
-        {
-            var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-            if (hwnd != IntPtr.Zero)
-            {
-                SetForegroundWindow(hwnd);
-            }
-
-            bool isDark = IsDarkTheme;
-            var itemStyle = CreateMenuItemStyle(isDark);
-
-            var menu = new ContextMenu
-            {
-                Style = CreateContextMenuStyle(isDark)
-            };
-
-            if (fromTray)
-            {
-                menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
-                menu.PlacementTarget = this;
-
-                var openPanelItem = CreateStyledMenuItem("Open Panel", itemStyle);
-                openPanelItem.Click += (s, e) => ShowFlyout();
-                menu.Items.Add(openPanelItem);
-
-                menu.Items.Add(CreateStyledSeparator(isDark));
-            }
-            else
-            {
-                menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Top;
-                menu.PlacementTarget = this;
-                menu.VerticalOffset = -6;
-            }
-
-            var styleItem = CreateStyledMenuItem("Display Style: " + (_displayStyle == 0 ? "Percentage (85%)" : "Battery Icon"), itemStyle);
-            styleItem.Click += (s, e) =>
-            {
-                _displayStyle = _displayStyle == 0 ? 1 : 0;
-                SaveSettings();
-                ApplyDevicesState(_latestDevices);
-                UpdateTheme();
-            };
-            menu.Items.Add(styleItem);
-
-            var hideItem = CreateStyledMenuItem("Hide when disconnected", itemStyle, true, _hideWhenDisconnected);
-            hideItem.Click += (s, e) =>
-            {
-                _hideWhenDisconnected = hideItem.IsChecked;
-                SaveSettings();
-                ApplyDevicesState(_latestDevices);
-            };
-            menu.Items.Add(hideItem);
-
-            // Devices visibility submenu
-            var devicesSubmenu = new MenuItem
-            {
-                Header = "Device Visibility",
-                Style = CreateSubmenuHeaderStyle(isDark),
-                ToolTip = "Select which devices to show in the taskbar and flyout"
-            };
-
-            var devicesList = _allKnownDevices.Values.ToList();
-            if (devicesList.Count == 0 && _latestDevices != null && _latestDevices.Count > 0)
-            {
-                devicesList = _latestDevices;
-            }
-
-            if (devicesList.Count == 0)
-            {
-                var emptyItem = CreateStyledMenuItem("(No devices found)", itemStyle);
-                emptyItem.IsEnabled = false;
-                devicesSubmenu.Items.Add(emptyItem);
-            }
-            else
-            {
-                var sorted = devicesList
-                    .GroupBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
-                    .Select(g => g.First())
-                    .OrderBy(d => d.Name)
-                    .ToList();
-
-                foreach (var d in sorted)
-                {
-                    string devName = d.Name;
-                    bool isVisible = !IsDeviceHidden(devName);
-                    var devItem = CreateStyledMenuItem(devName, itemStyle, true, isVisible);
-                    devItem.StaysOpenOnClick = true;
-                    devItem.Click += (s, e) =>
-                    {
-                        SetDeviceVisibility(devName, devItem.IsChecked);
-                    };
-                    devicesSubmenu.Items.Add(devItem);
-                }
-            }
-            menu.Items.Add(devicesSubmenu);
-
-            var startupItem = CreateStyledMenuItem("Run on startup", itemStyle, true, _runOnStartup);
-            startupItem.Click += (s, e) =>
-            {
-                _runOnStartup = startupItem.IsChecked;
-                SetRunOnStartup(_runOnStartup);
-            };
-            menu.Items.Add(startupItem);
-
-            menu.Items.Add(CreateStyledSeparator(isDark));
-
-            var refreshItem = CreateStyledMenuItem("Refresh Device Info", itemStyle);
-            refreshItem.Click += (s, e) => { if (_omniManager != null) _omniManager.ForceRefresh(); };
-            menu.Items.Add(refreshItem);
-
-            var exitItem = CreateStyledMenuItem("Exit", itemStyle);
-            exitItem.Click += (s, e) => Application.Current.Shutdown();
-            menu.Items.Add(exitItem);
-
-            menu.IsOpen = true;
-        }
-
-        private static Style CreateSubmenuHeaderStyle(bool isDark)
-        {
-            var style = new Style(typeof(MenuItem));
-            var template = new ControlTemplate(typeof(MenuItem));
-
-            var border = new FrameworkElementFactory(typeof(Border), "Bd");
-            border.SetValue(Border.CornerRadiusProperty, new CornerRadius(4));
-            border.SetValue(Border.BackgroundProperty, Brushes.Transparent);
-            border.SetValue(Border.PaddingProperty, new Thickness(8, 6, 8, 6));
-            border.SetValue(Border.MarginProperty, new Thickness(0, 1, 0, 1));
-            border.SetValue(Border.SnapsToDevicePixelsProperty, true);
-
-            var grid = new FrameworkElementFactory(typeof(Grid));
-
-            var col0 = new FrameworkElementFactory(typeof(ColumnDefinition));
-            col0.SetValue(ColumnDefinition.WidthProperty, new GridLength(20));
-            grid.AppendChild(col0);
-
-            var col1 = new FrameworkElementFactory(typeof(ColumnDefinition));
-            col1.SetValue(ColumnDefinition.WidthProperty, new GridLength(1, GridUnitType.Star));
-            grid.AppendChild(col1);
-
-            var col2 = new FrameworkElementFactory(typeof(ColumnDefinition));
-            col2.SetValue(ColumnDefinition.WidthProperty, new GridLength(16));
-            grid.AppendChild(col2);
-
-            var iconGlyph = new FrameworkElementFactory(typeof(TextBlock), "IconGlyph");
-            iconGlyph.SetValue(Grid.ColumnProperty, 0);
-            iconGlyph.SetValue(TextBlock.TextProperty, "\uE772");
-            iconGlyph.SetValue(TextBlock.FontFamilyProperty, new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets, Segoe UI Symbol"));
-            iconGlyph.SetValue(TextBlock.FontSizeProperty, 11.5);
-            iconGlyph.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-            iconGlyph.SetValue(TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Left);
-            iconGlyph.SetValue(TextBlock.ForegroundProperty, isDark ? Brushes.White : Brushes.Black);
-            grid.AppendChild(iconGlyph);
-
-            var cp = new FrameworkElementFactory(typeof(ContentPresenter), "HeaderHost");
-            cp.SetValue(Grid.ColumnProperty, 1);
-            cp.SetValue(ContentPresenter.ContentSourceProperty, "Header");
-            cp.SetValue(ContentPresenter.RecognizesAccessKeyProperty, true);
-            cp.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
-            grid.AppendChild(cp);
-
-            var arrow = new FrameworkElementFactory(typeof(TextBlock), "SubmenuArrow");
-            arrow.SetValue(Grid.ColumnProperty, 2);
-            arrow.SetValue(TextBlock.TextProperty, "\uE76C");
-            arrow.SetValue(TextBlock.FontFamilyProperty, new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets, Segoe UI Symbol"));
-            arrow.SetValue(TextBlock.FontSizeProperty, 9.0);
-            arrow.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
-            arrow.SetValue(TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Right);
-            arrow.SetValue(TextBlock.OpacityProperty, 0.6);
-            arrow.SetValue(TextBlock.ForegroundProperty, isDark ? Brushes.White : Brushes.Black);
-            grid.AppendChild(arrow);
-
-            var popup = new FrameworkElementFactory(typeof(Popup), "PART_Popup");
-            popup.SetValue(Popup.PlacementProperty, PlacementMode.Right);
-            popup.SetValue(Popup.AllowsTransparencyProperty, true);
-            popup.SetValue(Popup.FocusableProperty, false);
-            popup.SetValue(Popup.HorizontalOffsetProperty, -2.0);
-            popup.SetValue(Popup.VerticalOffsetProperty, -4.0);
-            popup.SetBinding(Popup.IsOpenProperty, new Binding("IsSubmenuOpen")
-            {
-                RelativeSource = new RelativeSource(RelativeSourceMode.TemplatedParent)
-            });
-
-            var subBorder = new FrameworkElementFactory(typeof(Border));
-            subBorder.SetValue(Border.BackgroundProperty, isDark ? new SolidColorBrush(Color.FromArgb(242, 32, 32, 32)) : new SolidColorBrush(Color.FromArgb(245, 252, 252, 252)));
-            subBorder.SetValue(Border.BorderBrushProperty, isDark ? new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(30, 0, 0, 0)));
-            subBorder.SetValue(Border.BorderThicknessProperty, new Thickness(1));
-            subBorder.SetValue(Border.CornerRadiusProperty, new CornerRadius(8));
-            subBorder.SetValue(Border.PaddingProperty, new Thickness(4));
-            subBorder.SetValue(Border.SnapsToDevicePixelsProperty, true);
-
-            var dropShadow = new System.Windows.Media.Effects.DropShadowEffect
-            {
-                BlurRadius = 14,
-                ShadowDepth = 3,
-                Direction = 270,
-                Color = Colors.Black,
-                Opacity = isDark ? 0.45 : 0.15
-            };
-            subBorder.SetValue(UIElement.EffectProperty, dropShadow);
-
-            var itemsPresenter = new FrameworkElementFactory(typeof(ItemsPresenter));
-            subBorder.AppendChild(itemsPresenter);
-            popup.AppendChild(subBorder);
-
-            grid.AppendChild(popup);
-            border.AppendChild(grid);
-            template.VisualTree = border;
-
-            var highlightTrigger = new Trigger { Property = MenuItem.IsHighlightedProperty, Value = true };
-            highlightTrigger.Setters.Add(new Setter(
-                Border.BackgroundProperty,
-                isDark ? new SolidColorBrush(Color.FromArgb(32, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(16, 0, 0, 0)),
-                "Bd"));
-            template.Triggers.Add(highlightTrigger);
-
-            var submenuOpenTrigger = new Trigger { Property = MenuItem.IsSubmenuOpenProperty, Value = true };
-            submenuOpenTrigger.Setters.Add(new Setter(
-                Border.BackgroundProperty,
-                isDark ? new SolidColorBrush(Color.FromArgb(32, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(16, 0, 0, 0)),
-                "Bd"));
-            template.Triggers.Add(submenuOpenTrigger);
-
-            style.Setters.Add(new Setter(Control.TemplateProperty, template));
-            style.Setters.Add(new Setter(Control.ForegroundProperty, isDark ? Brushes.White : new SolidColorBrush(Color.FromRgb(26, 26, 26))));
-            style.Setters.Add(new Setter(Control.FontFamilyProperty, new FontFamily("Segoe UI Variable Text, Segoe UI, sans-serif")));
-            style.Setters.Add(new Setter(Control.FontSizeProperty, 12.0));
-            style.Setters.Add(new Setter(FrameworkElement.CursorProperty, Cursors.Hand));
-
-            return style;
-        }
-
-        private MenuItem CreateStyledMenuItem(string text, Style style, bool isCheckable = false, bool isChecked = false)
-        {
-            return new MenuItem
-            {
-                Header = text,
-                Style = style,
-                IsCheckable = isCheckable,
-                IsChecked = isChecked
-            };
-        }
-
+        /// <summary>
+        /// Registers Win32 accessibility event hooks to track taskbar geometry updates, foreground transitions, and window resizes.
+        /// </summary>
         private void SetupHooks()
         {
-            _winEventProc = new WinEventDelegate(WinEventCallback);
+            _winEventProc = new TaskbarHelper.WinEventDelegate(WinEventCallback);
 
-            // 1. Taskbar position/size changes
-            IntPtr taskbar = FindWindow("Shell_TrayWnd", null);
+            IntPtr taskbar = TaskbarHelper.GetTaskbarHandle();
             if (taskbar != IntPtr.Zero)
             {
                 uint processId;
-                uint threadId = GetWindowThreadProcessId(taskbar, out processId);
+                uint threadId = TaskbarHelper.GetWindowThreadProcessId(taskbar, out processId);
                 if (threadId != 0)
                 {
-                    _hTaskbarHook = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, IntPtr.Zero, _winEventProc, processId, threadId, WINEVENT_OUTOFCONTEXT);
+                    _hTaskbarHook = TaskbarHelper.SetWinEventHook(
+                        TaskbarHelper.EVENT_OBJECT_LOCATIONCHANGE,
+                        TaskbarHelper.EVENT_OBJECT_LOCATIONCHANGE,
+                        IntPtr.Zero,
+                        _winEventProc,
+                        processId,
+                        threadId,
+                        TaskbarHelper.WINEVENT_OUTOFCONTEXT);
                 }
             }
 
-            // 2. Global foreground window switch and resize/fullscreen transitions (fires immediately in 0 ms)
-            _hGlobalHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, IntPtr.Zero, _winEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+            // Global hook for immediate foreground window transitions (games, fullscreen apps, Alt+Tab)
+            _hGlobalHook = TaskbarHelper.SetWinEventHook(
+                TaskbarHelper.EVENT_SYSTEM_FOREGROUND,
+                TaskbarHelper.EVENT_SYSTEM_FOREGROUND,
+                IntPtr.Zero,
+                _winEventProc,
+                0,
+                0,
+                TaskbarHelper.WINEVENT_OUTOFCONTEXT);
+
+            // Global hook for in-place window resize / F11 fullscreen events
+            _hGlobalSizeHook = TaskbarHelper.SetWinEventHook(
+                TaskbarHelper.EVENT_SYSTEM_MOVESIZEEND,
+                TaskbarHelper.EVENT_SYSTEM_MOVESIZEEND,
+                IntPtr.Zero,
+                _winEventProc,
+                0,
+                0,
+                TaskbarHelper.WINEVENT_OUTOFCONTEXT);
         }
 
+        /// <summary>
+        /// Native hook callback invoked when foreground window, taskbar or window bounds shift.
+        /// </summary>
         private void WinEventCallback(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
         {
             UpdatePosition();
         }
 
-        [DllImport("user32.dll")]
-        static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-        static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+        // ═══════════════════════════════════════════════════════════════════════════
+        // Window Positioning & Pure Win32 Docking Math
+        // ═══════════════════════════════════════════════════════════════════════════
 
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        static extern bool SetForegroundWindow(IntPtr hWnd);
-
-        [DllImport("user32.dll")]
-        static extern IntPtr GetForegroundWindow();
-
-        [DllImport("user32.dll")]
-        static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
-
-        [DllImport("user32.dll")]
-        static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
-
-        const uint MONITOR_DEFAULTTONEAREST = 2;
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct MONITORINFO
-        {
-            public int cbSize;
-            public RECT rcMonitor;
-            public RECT rcWork;
-            public uint dwFlags;
-        }
-
-        private bool IsForegroundFullscreen()
-        {
-            IntPtr fgWnd = GetForegroundWindow();
-            if (fgWnd == IntPtr.Zero) return false;
-
-            IntPtr desktop = FindWindow("Progman", null);
-            IntPtr shell = FindWindow("WorkerW", null);
-            IntPtr taskbar = FindWindow("Shell_TrayWnd", null);
-            if (fgWnd == desktop || fgWnd == shell || fgWnd == taskbar) return false;
-
-            var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-            if (fgWnd == hwnd) return false;
-
-            if (_flyout != null && _flyout.IsVisible)
-            {
-                var flyoutHwnd = new System.Windows.Interop.WindowInteropHelper(_flyout).Handle;
-                if (fgWnd == flyoutHwnd) return false;
-            }
-
-            RECT appBounds;
-            if (!GetWindowRect(fgWnd, out appBounds)) return false;
-
-            IntPtr hMonitor = MonitorFromWindow(fgWnd, MONITOR_DEFAULTTONEAREST);
-            if (hMonitor == IntPtr.Zero) return false;
-
-            MONITORINFO mi = new MONITORINFO();
-            mi.cbSize = Marshal.SizeOf(mi);
-            if (GetMonitorInfo(hMonitor, ref mi))
-            {
-                // Fullscreen if foreground window covers or exceeds the monitor screen
-                return appBounds.Left <= mi.rcMonitor.Left &&
-                       appBounds.Top <= mi.rcMonitor.Top &&
-                       appBounds.Right >= mi.rcMonitor.Right &&
-                       appBounds.Bottom >= mi.rcMonitor.Bottom;
-            }
-            return false;
-        }
-
+        private bool _isUpdatingPosition = false;
         private int _lastX = -1;
         private int _lastY = -1;
-        private int _lastTrayLeft = -1;
-        private int _lastTrayTop = -1;
-        private int _lastTrayRight = -1;
-        private int _lastTrayBottom = -1;
+        private bool _lastFullscreen = false;
 
+        /// <summary>
+        /// Recalculates the screen position of the overlay to dock at the configured taskbar location.
+        /// Evaluates fullscreen state and user-selected position (Right beside Tray vs Left beside Start/Widgets).
+        /// </summary>
         public void UpdatePosition()
         {
-            if (IsForegroundFullscreen() || (_shouldHideOverlay && _hideWhenDisconnected))
+            if (_isUpdatingPosition) return;
+            _isUpdatingPosition = true;
+            try
             {
-                if (this.Visibility != Visibility.Hidden)
-                    this.Visibility = Visibility.Hidden;
-                return;
-            }
-            else
-            {
-                if (this.Visibility != Visibility.Visible)
-                    this.Visibility = Visibility.Visible;
-            }
-
-            UpdateTheme();
-
-            IntPtr taskbar = FindWindow("Shell_TrayWnd", null);
-            if (taskbar != IntPtr.Zero)
-            {
-                IntPtr trayNotify = FindWindowEx(taskbar, IntPtr.Zero, "TrayNotifyWnd", null);
-                if (trayNotify != IntPtr.Zero)
+                var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                IntPtr flyoutHwnd = _flyout != null ? new System.Windows.Interop.WindowInteropHelper(_flyout).Handle : IntPtr.Zero;
+                bool isFullscreen = TaskbarHelper.IsForegroundFullscreen(hwnd, flyoutHwnd);
+                if (isFullscreen != _lastFullscreen)
                 {
-                    RECT rect;
-                    if (GetWindowRect(trayNotify, out rect))
+                    _lastFullscreen = isFullscreen;
+                    Logger.Log(string.Format("Fullscreen state changed: isFullscreen={0}", isFullscreen));
+                }
+                bool isTrayOnly = SettingsManager.Instance.Current.DisplayMode == 1;
+
+                if (isTrayOnly || isFullscreen || (_shouldHideOverlay && _hideWhenDisconnected))
+                {
+                    if (this.Visibility != Visibility.Hidden)
+                        this.Visibility = Visibility.Hidden;
+                    return;
+                }
+                else
+                {
+                    if (this.Visibility != Visibility.Visible)
+                        this.Visibility = Visibility.Visible;
+                }
+
+                UpdateTheme();
+
+                IntPtr taskbar = TaskbarHelper.GetTaskbarHandle();
+                if (taskbar == IntPtr.Zero) return;
+
+                TaskbarHelper.RECT tbRect;
+                if (!TaskbarHelper.GetWindowRect(taskbar, out tbRect)) return;
+
+                var source = PresentationSource.FromVisual(this);
+                double dpiX = source != null ? source.CompositionTarget.TransformToDevice.M11 : 1.0;
+                double dpiY = source != null ? source.CompositionTarget.TransformToDevice.M22 : 1.0;
+
+                int physicalWidth = (int)(this.Width * dpiX);
+                int physicalHeight = (int)(this.Height * dpiY);
+                int taskbarHeight = tbRect.Bottom - tbRect.Top;
+                int y = tbRect.Top + (taskbarHeight - physicalHeight) / 2;
+
+                // Standard placement: docked directly beside the Windows System Tray (TrayNotifyWnd)
+                int x;
+                TaskbarHelper.RECT trayRect;
+                if (TaskbarHelper.GetTrayRect(taskbar, out trayRect))
+                {
+                    x = trayRect.Left - physicalWidth - 4;
+                }
+                else
+                {
+                    x = tbRect.Right - physicalWidth - 10;
+                }
+
+                if (x != _lastX || y != _lastY)
+                {
+                    _lastX = x;
+                    _lastY = y;
+
+                    this.Left = x / dpiX;
+                    this.Top = y / dpiY;
+
+                    if (hwnd != IntPtr.Zero)
                     {
-                        var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-
-                        var source = PresentationSource.FromVisual(this);
-                        double dpiX = source != null ? source.CompositionTarget.TransformToDevice.M11 : 1.0;
-                        double dpiY = source != null ? source.CompositionTarget.TransformToDevice.M22 : 1.0;
-
-                        int physicalWidth = (int)(this.Width * dpiX);
-                        int physicalHeight = (int)(this.Height * dpiY);
-
-                        int x = rect.Left - physicalWidth;
-                        int taskbarHeight = rect.Bottom - rect.Top;
-                        int y = rect.Top + (taskbarHeight - physicalHeight) / 2;
-
-                        if (x != _lastX || y != _lastY ||
-                            rect.Left != _lastTrayLeft || rect.Top != _lastTrayTop ||
-                            rect.Right != _lastTrayRight || rect.Bottom != _lastTrayBottom)
-                        {
-                            _lastX = x;
-                            _lastY = y;
-                            _lastTrayLeft = rect.Left;
-                            _lastTrayTop = rect.Top;
-                            _lastTrayRight = rect.Right;
-                            _lastTrayBottom = rect.Bottom;
-
-                            if (hwnd != IntPtr.Zero)
-                            {
-                                DwmHelper.EnableWindowTransitions(hwnd, false);
-                                SetWindowPos(hwnd, HWND_TOPMOST, x, y, physicalWidth, physicalHeight, 0x0010); // NOACTIVATE
-                            }
-                        }
-                        if (this.Visibility == Visibility.Visible && hwnd != IntPtr.Zero)
-                        {
-                            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, 0x0010 | 0x0001 | 0x0002);
-                        }
+                        DwmHelper.EnableWindowTransitions(hwnd, false);
+                        TaskbarHelper.SetWindowPos(hwnd, TaskbarHelper.HWND_TOPMOST, x, y, physicalWidth, physicalHeight, TaskbarHelper.SWP_NOACTIVATE);
                     }
                 }
+
+                if (this.Visibility == Visibility.Visible && hwnd != IntPtr.Zero)
+                {
+                    TaskbarHelper.SetWindowPos(hwnd, TaskbarHelper.HWND_TOPMOST, 0, 0, 0, 0,
+                        TaskbarHelper.SWP_NOACTIVATE | TaskbarHelper.SWP_NOSIZE | TaskbarHelper.SWP_NOMOVE);
+                }
+            }
+            finally
+            {
+                _isUpdatingPosition = false;
             }
         }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // System Theme Synchronization
+        // ═══════════════════════════════════════════════════════════════════════════
 
         private DateTime _lastThemeCheckTime = DateTime.MinValue;
 
+        /// <summary>
+        /// Queries the Windows registry to inspect the system theme preference (<c>SystemUsesLightTheme</c>),
+        /// dynamically applying dark mode DWM styling, tray icon colors, flyout styling, and widget rendering.
+        /// </summary>
         private void UpdateTheme()
         {
             try
@@ -1149,6 +992,7 @@ namespace OmniHidTaskbar.UI
                         if (_lastIsSystemLight != isLight)
                         {
                             _lastIsSystemLight = isLight;
+                            DwmHelper.InvalidateThemeColorCache();
 
                             var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
                             if (hwnd != IntPtr.Zero)
@@ -1156,7 +1000,7 @@ namespace OmniHidTaskbar.UI
                                 DwmHelper.SetDarkMode(hwnd, !isLight);
                             }
 
-                            UpdateTrayIconTheme(isLight);
+                            UpdateDynamicTrayIcon(_latestDevices, isLight);
 
                             if (_flyout != null && _flyout.IsVisible)
                             {
@@ -1171,32 +1015,96 @@ namespace OmniHidTaskbar.UI
             catch { }
         }
 
-        private void UpdateTrayIconTheme(bool isLight)
+        // ═══════════════════════════════════════════════════════════════════════════
+        // System Tray (NotifyIcon) Dynamic Icon Rendering & Cleanup
+        // ═══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Renders an in-memory 16x16 GDI+ bitmap depicting live peripheral telemetry or minimal battery glyphs,
+        /// converting it to a native Win32 icon and destroying the intermediate unmanaged GDI icon handle to prevent leaks.
+        /// </summary>
+        /// <param name="devices">Current snapshot of target devices.</param>
+        /// <param name="isLight">True if Windows taskbar uses a light theme; false for dark theme.</param>
+        private void UpdateDynamicTrayIcon(List<TaskbarDeviceState> devices, bool isLight)
         {
+            if (_notifyIcon == null) return;
             try
             {
-                using (var bmp = new System.Drawing.Bitmap(16, 16))
-                using (var g = System.Drawing.Graphics.FromImage(bmp))
+                using (var bmp = new Bitmap(16, 16))
+                using (var g = Graphics.FromImage(bmp))
                 {
                     g.Clear(System.Drawing.Color.Transparent);
-                    var pen = new System.Drawing.Pen(isLight ? System.Drawing.Color.Black : System.Drawing.Color.White, 1.5f);
-                    // Battery outline icon
-                    g.DrawRectangle(pen, 2, 4, 10, 8);
-                    g.FillRectangle(new System.Drawing.SolidBrush(isLight ? System.Drawing.Color.Black : System.Drawing.Color.White), 12, 6, 2, 4);
+                    var strokeColor = isLight ? System.Drawing.Color.Black : System.Drawing.Color.White;
+
+                    var activeDev = devices != null ? devices.FirstOrDefault(d => d.IsConnected && d.BatteryPercent >= 0) : null;
+                    if (activeDev != null)
+                    {
+                        // Battery frame
+                        using (var pen = new System.Drawing.Pen(strokeColor, 1.2f))
+                        {
+                            g.DrawRectangle(pen, 1, 3, 11, 9);
+                        }
+                        // Terminal nub
+                        using (var brush = new SolidBrush(strokeColor))
+                        {
+                            g.FillRectangle(brush, 12, 6, 2, 3);
+                        }
+
+                        // Interior fill bar based on percentage
+                        int fillWidth = Math.Max(1, (int)Math.Round((activeDev.BatteryPercent / 100.0) * 8.0));
+                        var fillBrushColor = activeDev.IsCharging
+                            ? System.Drawing.Color.FromArgb(40, 200, 90)
+                            : (activeDev.BatteryPercent <= 20
+                                ? System.Drawing.Color.FromArgb(225, 45, 45)
+                                : strokeColor);
+
+                        using (var fillBrush = new SolidBrush(fillBrushColor))
+                        {
+                            g.FillRectangle(fillBrush, 3, 5, fillWidth, 5);
+                        }
+                    }
+                    else
+                    {
+                        // Default offline outline icon
+                        using (var pen = new System.Drawing.Pen(strokeColor, 1.2f))
+                        {
+                            g.DrawRectangle(pen, 1, 3, 11, 9);
+                        }
+                        using (var brush = new SolidBrush(strokeColor))
+                        {
+                            g.FillRectangle(brush, 12, 6, 2, 3);
+                        }
+                    }
 
                     IntPtr hIcon = bmp.GetHicon();
-                    _notifyIcon.Icon = System.Drawing.Icon.FromHandle(hIcon);
+                    try
+                    {
+                        _notifyIcon.Icon = System.Drawing.Icon.FromHandle(hIcon);
+                    }
+                    finally
+                    {
+                        // Crucial: Destroy unmanaged Win32 GDI icon handle to prevent GDI resource leaks
+                        TaskbarHelper.DestroyIcon(hIcon);
+                    }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Logger.Log("Failed to render dynamic tray icon: " + ex.Message);
+            }
         }
 
+        /// <summary>
+        /// Initializes the WinForms <see cref="System.Windows.Forms.NotifyIcon"/> instance and wires mouse click events.
+        /// </summary>
         private void InitNotifyIcon()
         {
-            _notifyIcon = new System.Windows.Forms.NotifyIcon();
-            _notifyIcon.Text = "OmniHID Battery Indicator";
-            _notifyIcon.Visible = true;
-            _notifyIcon.ContextMenuStrip = null;
+            _notifyIcon = new System.Windows.Forms.NotifyIcon
+            {
+                Text = "OmniHID Battery Indicator",
+                Visible = true,
+                ContextMenuStrip = null
+            };
 
             _notifyIcon.MouseClick += (s, e) =>
             {
@@ -1210,8 +1118,12 @@ namespace OmniHidTaskbar.UI
                 }
             };
 
-            UpdateTrayIconTheme(!IsDarkTheme);
+            UpdateDynamicTrayIcon(null, !IsDarkTheme);
         }
+
+        // ═══════════════════════════════════════════════════════════════════════════
+        // Hardware Change Events & Settings Persistence
+        // ═══════════════════════════════════════════════════════════════════════════
 
         private const int WM_DEVICECHANGE = 0x0219;
         private const int DBT_DEVICEARRIVAL = 0x8000;
@@ -1220,6 +1132,10 @@ namespace OmniHidTaskbar.UI
 
         private DateTime _lastDeviceChangePoll = DateTime.MinValue;
 
+        /// <summary>
+        /// Native window procedure hook intercepting broadcast Windows messages.
+        /// Detects USB and HID hardware arrival/removal events (<c>WM_DEVICECHANGE</c>) to force a device telemetry refresh.
+        /// </summary>
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
             if (msg == WM_DEVICECHANGE)
@@ -1238,6 +1154,9 @@ namespace OmniHidTaskbar.UI
             return IntPtr.Zero;
         }
 
+        /// <summary>
+        /// Loads user settings from the singleton <see cref="SettingsManager"/> into local instance fields.
+        /// </summary>
         private void LoadSettings()
         {
             try
@@ -1245,37 +1164,13 @@ namespace OmniHidTaskbar.UI
                 var s = SettingsManager.Instance.Current;
                 _hideWhenDisconnected = s.HideWhenDisconnected;
                 _displayStyle = s.DisplayStyle;
-                _runOnStartup = s.RunOnStartup;
-                Logger.Log(string.Format("Settings loaded: Style={0}, HideDisconnected={1}, RunOnStartup={2}",
-                    _displayStyle, _hideWhenDisconnected, _runOnStartup));
+                Logger.Log(string.Format("Settings loaded: Style={0}, HideDisconnected={1}",
+                    _displayStyle, _hideWhenDisconnected));
             }
             catch (Exception ex)
             {
                 Logger.Log("Failed to load settings: " + ex.Message);
             }
         }
-
-        private void SaveSettings()
-        {
-            try
-            {
-                var s = SettingsManager.Instance.Current;
-                s.HideWhenDisconnected = _hideWhenDisconnected;
-                s.DisplayStyle = _displayStyle;
-                s.RunOnStartup = _runOnStartup;
-                SettingsManager.Instance.Save();
-            }
-            catch (Exception ex)
-            {
-                Logger.Log("Failed to save settings: " + ex.Message);
-            }
-        }
-
-        private void SetRunOnStartup(bool enable)
-        {
-            _runOnStartup = enable;
-            SaveSettings();
-        }
     }
 }
-

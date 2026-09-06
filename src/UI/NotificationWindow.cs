@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -6,8 +6,21 @@ using System.Windows.Threading;
 
 namespace OmniHidTaskbar.UI
 {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Toast Notification Window
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Lightweight non-intrusive toast notification popup anchored above the system tray,
+    /// used for warning when a peripheral's battery drops to low or critical levels.
+    /// </summary>
     public class NotificationWindow : Window
     {
+        /// <summary>
+        /// Initializes a new instance of <see cref="NotificationWindow"/> and positions it at the bottom-right work area.
+        /// </summary>
+        /// <param name="title">Header alert text (e.g. "Low Battery Alert").</param>
+        /// <param name="message">Informative message describing the affected peripheral and percentage.</param>
         public NotificationWindow(string title, string message)
         {
             WindowStyle = WindowStyle.None;
@@ -18,6 +31,7 @@ namespace OmniHidTaskbar.UI
             Width = 320;
             Height = 90;
 
+            // Anchor toast 10 DIPs from the bottom-right screen work area
             this.Left = SystemParameters.WorkArea.Right - this.Width - 10;
             this.Top = SystemParameters.WorkArea.Bottom - this.Height - 10;
 
@@ -62,6 +76,7 @@ namespace OmniHidTaskbar.UI
                 }
             };
 
+            // Auto-dismiss after 5 seconds
             var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
             timer.Tick += (s, e) =>
             {

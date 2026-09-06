@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -10,13 +11,30 @@ using OmniHidTaskbar.Core;
 
 namespace OmniHidTaskbar.UI
 {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Windows 11 Fluent Flyout Popup Window
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Interactive Windows 11-styled Fluent Flyout detailing connected peripherals,
+    /// charging telemetry, estimated battery runtime, battery bars, and device controls.
+    /// </summary>
+    /// <remarks>
+    /// Anchored dynamically above the taskbar widget with a 14 DIP spacing gap.
+    /// Employs a cloaked layout render pass and DirectComposition compositor clock boost
+    /// to eliminate visual pop-in, window flicker, or misplaced frames.
+    /// </remarks>
     public class FlyoutWindow : Window
     {
+        // ═══════════════════════════════════════════════════════════════════════
+        // Win32 Interop & Monitor Geometry
+        // ═══════════════════════════════════════════════════════════════════════
+
         [DllImport("user32.dll")]
         static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
 
         [DllImport("user32.dll")]
-        static extern bool GetMonitorInfo(IntPtr hMonitor, ref OverlayWindow.MONITORINFO lpmi);
+        static extern bool GetMonitorInfo(IntPtr hMonitor, ref TaskbarHelper.MONITORINFO lpmi);
 
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -27,17 +45,25 @@ namespace OmniHidTaskbar.UI
         private readonly StackPanel _cardsStack;
         private List<TaskbarDeviceState> _currentDevices = new List<TaskbarDeviceState>();
 
-        // Settings view state
-        private readonly Grid _containerGrid;
-        private readonly StackPanel _settingsView;
-        private TextBlock _statusFeedbackText;
-        private TextBlock _settingsTitle;
-        private Border _backBtn;
-        private TextBlock _backIcon;
-        private string _activeSettingsDeviceId;
-        private readonly List<Border> _sleepButtonBorders = new List<Border>();
-        private readonly List<TextBlock> _sleepButtonTexts = new List<TextBlock>();
+        // ═══════════════════════════════════════════════════════════════════════
+        // Drag-and-Drop Reordering State
+        // ═══════════════════════════════════════════════════════════════════════
 
+        private Border _draggingCardBorder = null;
+        private int _dragSourceIndex = -1;
+        private Point _dragStartPos;
+        private bool _isDraggingActive = false;
+
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Constructor & Initialization
+        // ═══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Initializes a new instance of <see cref="FlyoutWindow"/> with acrylic styling and device cards.
+        /// </summary>
+        /// <param name="owner">The parent taskbar overlay window instance.</param>
+        /// <param name="devices">Initial snapshot of connected peripheral telemetry states.</param>
         public FlyoutWindow(OverlayWindow owner, List<TaskbarDeviceState> devices)
         {
             _owner = owner;
@@ -53,12 +79,12 @@ namespace OmniHidTaskbar.UI
 
             _rootBorder = new Border
             {
-                Background = new SolidColorBrush(isDark ? Color.FromArgb(245, 28, 28, 28) : Color.FromArgb(248, 250, 250, 250)),
-                BorderBrush = new SolidColorBrush(isDark ? Color.FromArgb(80, 255, 255, 255) : Color.FromArgb(60, 0, 0, 0)),
+                Background = isDark ? new SolidColorBrush(Color.FromArgb(240, 28, 28, 28)) : new SolidColorBrush(Color.FromArgb(246, 250, 250, 250)),
+                BorderBrush = DwmHelper.GetSubtleBorderBrush(isDark),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(10),
                 Padding = new Thickness(12),
-                Margin = new Thickness(6)
+                Margin = new Thickness(6) // 6 DIP window border margin allows drop shadow without clipping
             };
 
             var dropShadow = new System.Windows.Media.Effects.DropShadowEffect
@@ -71,30 +97,14 @@ namespace OmniHidTaskbar.UI
             };
             _rootBorder.Effect = dropShadow;
 
-            _containerGrid = new Grid { MinHeight = 78 };
-
             _cardsStack = new StackPanel
             {
                 Orientation = Orientation.Vertical,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-
-            // -------------------------------------------------------------
-            // SETTINGS VIEW (For devices supporting sleep timer / options)
-            // -------------------------------------------------------------
-            _settingsView = new StackPanel
-            {
-                MinHeight = 78,
                 VerticalAlignment = VerticalAlignment.Center,
-                Visibility = Visibility.Collapsed
+                MinHeight = 78
             };
 
-            BuildSettingsView(isDark);
-
-            _containerGrid.Children.Add(_cardsStack);
-            _containerGrid.Children.Add(_settingsView);
-
-            _rootBorder.Child = _containerGrid;
+            _rootBorder.Child = _cardsStack;
             Content = _rootBorder;
 
             if (devices != null)
@@ -105,144 +115,14 @@ namespace OmniHidTaskbar.UI
             this.Deactivated += (s, e) => HideFlyout();
         }
 
-        private void BuildSettingsView(bool isDark)
-        {
-            var settingsHeader = new Grid { Margin = new Thickness(0, 0, 0, 8) };
-            settingsHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
-            settingsHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        // ═══════════════════════════════════════════════════════════════════════
+        // Telemetry Data Binding & Card Composition
+        // ═══════════════════════════════════════════════════════════════════════
 
-            _backBtn = new Border
-            {
-                Width = 22,
-                Height = 22,
-                CornerRadius = new CornerRadius(4),
-                HorizontalAlignment = HorizontalAlignment.Left,
-                Cursor = Cursors.Hand,
-                ToolTip = "Back",
-                Background = Brushes.Transparent
-            };
-            _backIcon = new TextBlock
-            {
-                Text = "\uE72B",
-                FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
-                FontSize = 12,
-                Foreground = isDark ? Brushes.White : Brushes.Black,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            _backBtn.Child = _backIcon;
-
-            _backBtn.MouseEnter += (s, e) =>
-            {
-                bool currentDark = _owner != null ? _owner.IsDarkTheme : true;
-                _backBtn.Background = currentDark ? new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(30, 0, 0, 0));
-            };
-            _backBtn.MouseLeave += (s, e) =>
-            {
-                _backBtn.Background = Brushes.Transparent;
-            };
-
-            _backBtn.MouseLeftButtonUp += (s, e) =>
-            {
-                _settingsView.Visibility = Visibility.Collapsed;
-                _statusFeedbackText.Visibility = Visibility.Collapsed;
-                _cardsStack.Visibility = Visibility.Visible;
-            };
-
-            Grid.SetColumn(_backBtn, 0);
-            settingsHeader.Children.Add(_backBtn);
-
-            _settingsTitle = new TextBlock
-            {
-                Text = "Inactive Sleep Timer",
-                FontSize = 13,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = isDark ? Brushes.White : Brushes.Black,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(6, 0, 0, 0)
-            };
-            Grid.SetColumn(_settingsTitle, 1);
-            settingsHeader.Children.Add(_settingsTitle);
-
-            _settingsView.Children.Add(settingsHeader);
-
-            var sleepButtons = new System.Windows.Controls.Primitives.UniformGrid { Columns = 5, Margin = new Thickness(0, 2, 0, 0) };
-            int[] timeouts = new int[] { 0, 5, 15, 30, 60 };
-            string[] timeoutLabels = new string[] { "Off", "5m", "15m", "30m", "1h" };
-
-            for (int i = 0; i < timeouts.Length; i++)
-            {
-                byte mins = (byte)timeouts[i];
-                string label = timeoutLabels[i];
-
-                var btnBorder = new Border
-                {
-                    Height = 26,
-                    Margin = new Thickness(2, 0, 2, 0),
-                    CornerRadius = new CornerRadius(4),
-                    Background = isDark ? new SolidColorBrush(Color.FromArgb(35, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(20, 0, 0, 0)),
-                    BorderBrush = isDark ? new SolidColorBrush(Color.FromArgb(45, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(30, 0, 0, 0)),
-                    BorderThickness = new Thickness(1),
-                    Cursor = Cursors.Hand
-                };
-
-                var btnText = new TextBlock
-                {
-                    Text = label,
-                    FontSize = 11,
-                    FontWeight = FontWeights.Medium,
-                    Foreground = isDark ? Brushes.White : Brushes.Black,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                    VerticalAlignment = VerticalAlignment.Center
-                };
-                btnBorder.Child = btnText;
-
-                btnBorder.MouseEnter += (s, e) =>
-                {
-                    bool currentDark = _owner != null ? _owner.IsDarkTheme : true;
-                    btnBorder.Background = currentDark ? new SolidColorBrush(Color.FromArgb(60, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(40, 0, 0, 0));
-                    btnBorder.BorderBrush = currentDark ? new SolidColorBrush(Color.FromArgb(90, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(60, 0, 0, 0));
-                };
-                btnBorder.MouseLeave += (s, e) =>
-                {
-                    bool currentDark = _owner != null ? _owner.IsDarkTheme : true;
-                    btnBorder.Background = currentDark ? new SolidColorBrush(Color.FromArgb(35, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(20, 0, 0, 0));
-                    btnBorder.BorderBrush = currentDark ? new SolidColorBrush(Color.FromArgb(45, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(30, 0, 0, 0));
-                };
-
-                btnBorder.MouseLeftButtonUp += (s, e) =>
-                {
-                    bool ok = false; // Sleep timer command
-                    if (ok)
-                    {
-                        _statusFeedbackText.Text = string.Format("✓ Sleep timer set to {0}", mins == 0 ? "Off" : label);
-                        _statusFeedbackText.Foreground = new SolidColorBrush(Color.FromRgb(40, 190, 90));
-                    }
-                    else
-                    {
-                        _statusFeedbackText.Text = "✕ Failed to set sleep timer";
-                        _statusFeedbackText.Foreground = new SolidColorBrush(Color.FromRgb(230, 60, 60));
-                    }
-                    _statusFeedbackText.Visibility = Visibility.Visible;
-                };
-
-                _sleepButtonBorders.Add(btnBorder);
-                _sleepButtonTexts.Add(btnText);
-                sleepButtons.Children.Add(btnBorder);
-            }
-            _settingsView.Children.Add(sleepButtons);
-
-            _statusFeedbackText = new TextBlock
-            {
-                Margin = new Thickness(0, 8, 0, 0),
-                FontSize = 11,
-                FontWeight = FontWeights.Medium,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                Visibility = Visibility.Collapsed
-            };
-            _settingsView.Children.Add(_statusFeedbackText);
-        }
-
+        /// <summary>
+        /// Updates the list of displayed devices, re-rendering cards and triggering dynamic height recalculation.
+        /// </summary>
+        /// <param name="devices">Current snapshot of peripheral telemetry states.</param>
         public void UpdateData(List<TaskbarDeviceState> devices)
         {
             var visible = _owner != null ? _owner.GetVisibleDevices(devices) : devices;
@@ -283,20 +163,8 @@ namespace OmniHidTaskbar.UI
             for (int i = 0; i < _currentDevices.Count; i++)
             {
                 var dev = _currentDevices[i];
-                if (i > 0)
-                {
-                    // Separator between device cards
-                    var separator = new Separator
-                    {
-                        Margin = new Thickness(0, 8, 0, 8),
-                        Height = 1,
-                        Background = isDark ? new SolidColorBrush(Color.FromArgb(35, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(20, 0, 0, 0)),
-                        BorderThickness = new Thickness(0)
-                    };
-                    _cardsStack.Children.Add(separator);
-                }
-
-                _cardsStack.Children.Add(BuildDeviceCard(dev, isDark));
+                var cardContainer = BuildDeviceCard(dev, isDark, i == _currentDevices.Count - 1);
+                _cardsStack.Children.Add(cardContainer);
             }
 
             if (this.IsVisible)
@@ -305,8 +173,27 @@ namespace OmniHidTaskbar.UI
             }
         }
 
-        private FrameworkElement BuildDeviceCard(TaskbarDeviceState dev, bool isDark)
+        /// <summary>
+        /// Composes an individual Fluent interactive card displaying peripheral icon, name,
+        /// live battery gauge, charging pill, dynamic progress bar, estimated runtime, inline renaming, and drag handle.
+        /// </summary>
+        /// <param name="dev">Peripheral state model.</param>
+        /// <param name="isDark"><c>true</c> if dark theme is active.</param>
+        /// <param name="isLast"><c>true</c> if card is the last child in the list.</param>
+        /// <returns>A populated WPF element tree representing the device card container.</returns>
+        private FrameworkElement BuildDeviceCard(TaskbarDeviceState dev, bool isDark, bool isLast)
         {
+            var cardContainer = new Border
+            {
+                Padding = new Thickness(0, 4, 0, 8),
+                BorderThickness = isLast ? new Thickness(0) : new Thickness(0, 0, 0, 1),
+                BorderBrush = isDark
+                    ? new SolidColorBrush(Color.FromArgb(35, 255, 255, 255))
+                    : new SolidColorBrush(Color.FromArgb(20, 0, 0, 0)),
+                Background = Brushes.Transparent,
+                CornerRadius = new CornerRadius(6)
+            };
+
             var cardGrid = new Grid
             {
                 MinHeight = 64,
@@ -314,12 +201,9 @@ namespace OmniHidTaskbar.UI
                 Opacity = dev.IsConnected ? 1.0 : 0.65
             };
 
-            cardGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(46) });
+            cardGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
             cardGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            if (dev.SupportsSettings)
-            {
-                cardGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
-            }
+            cardGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
 
             // Left icon
             var iconBlock = new TextBlock
@@ -327,7 +211,7 @@ namespace OmniHidTaskbar.UI
                 Text = !string.IsNullOrEmpty(dev.IconGlyph) ? dev.IconGlyph : dev.GetDefaultIconGlyph(),
                 FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
                 FontSize = 30,
-                Foreground = isDark ? Brushes.White : Brushes.Black,
+                Foreground = DwmHelper.GetPrimaryTextBrush(isDark),
                 VerticalAlignment = VerticalAlignment.Center,
                 HorizontalAlignment = HorizontalAlignment.Left
             };
@@ -341,16 +225,144 @@ namespace OmniHidTaskbar.UI
                 Margin = new Thickness(4, 0, 4, 0)
             };
 
+            // Title row with inline rename support
+            var titleRow = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 0, 1)
+            };
+
             var titleBlock = new TextBlock
             {
-                Text = dev.Name,
-                Foreground = isDark ? Brushes.White : Brushes.Black,
+                Text = dev.DisplayName,
+                Foreground = DwmHelper.GetPrimaryTextBrush(isDark),
                 FontSize = 13,
                 FontWeight = FontWeights.SemiBold,
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 0, 0, 2)
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = 160,
+                VerticalAlignment = VerticalAlignment.Center,
+                Cursor = Cursors.Hand,
+                ToolTip = "Click to rename device"
             };
-            infoPanel.Children.Add(titleBlock);
+            titleRow.Children.Add(titleBlock);
+
+            var editBtn = new Border
+            {
+                Width = 18,
+                Height = 18,
+                CornerRadius = new CornerRadius(3),
+                Margin = new Thickness(4, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Cursor = Cursors.Hand,
+                ToolTip = "Rename device",
+                Background = Brushes.Transparent,
+                Child = new TextBlock
+                {
+                    Text = "\uE70F", // Segoe MDL2 Edit pencil
+                    FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                    FontSize = 10.5,
+                    Foreground = isDark ? new SolidColorBrush(Color.FromRgb(145, 145, 145)) : Brushes.Gray,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center
+                }
+            };
+            editBtn.MouseEnter += (s, e) =>
+            {
+                bool curDark = _owner != null ? _owner.IsDarkTheme : true;
+                editBtn.Background = curDark ? new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(30, 0, 0, 0));
+            };
+            editBtn.MouseLeave += (s, e) =>
+            {
+                editBtn.Background = Brushes.Transparent;
+            };
+            titleRow.Children.Add(editBtn);
+
+
+            infoPanel.Children.Add(titleRow);
+
+            // Inline rename editor TextBox (hidden by default)
+            var renameBox = new TextBox
+            {
+                Text = dev.DisplayName,
+                FontSize = 12,
+                FontWeight = FontWeights.Medium,
+                Margin = new Thickness(0, 0, 0, 3),
+                Visibility = Visibility.Collapsed,
+                Height = 22,
+                Padding = new Thickness(3, 1, 3, 1),
+                Background = isDark ? new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(20, 0, 0, 0)),
+                Foreground = isDark ? Brushes.White : Brushes.Black,
+                BorderBrush = isDark ? new SolidColorBrush(Color.FromArgb(90, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(60, 0, 0, 0)),
+                BorderThickness = new Thickness(1)
+            };
+            infoPanel.Children.Add(renameBox);
+
+            // If a custom nickname is active, show original model name as a subtle secondary label with small indent
+            if (!string.IsNullOrWhiteSpace(dev.CustomName))
+            {
+                var originalModelBlock = new TextBlock
+                {
+                    Text = dev.Name,
+                    Foreground = isDark ? new SolidColorBrush(Color.FromRgb(140, 140, 140)) : new SolidColorBrush(Color.FromRgb(120, 120, 120)),
+                    FontSize = 10,
+                    Margin = new Thickness(8, 0, 0, 2),
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    MaxWidth = 175
+                };
+                infoPanel.Children.Add(originalModelBlock);
+            }
+
+            Action startRename = () =>
+            {
+                titleRow.Visibility = Visibility.Collapsed;
+                renameBox.Visibility = Visibility.Visible;
+                renameBox.Text = dev.DisplayName;
+                renameBox.SelectAll();
+                renameBox.Focus();
+            };
+
+            titleBlock.MouseLeftButtonUp += (s, e) => startRename();
+            editBtn.MouseLeftButtonUp += (s, e) => startRename();
+
+            Action finishRename = () =>
+            {
+                if (renameBox.Visibility != Visibility.Visible) return;
+                renameBox.Visibility = Visibility.Collapsed;
+                titleRow.Visibility = Visibility.Visible;
+
+                string newName = renameBox.Text.Trim();
+                if (string.Equals(newName, dev.Name, StringComparison.OrdinalIgnoreCase))
+                {
+                    newName = null; // Revert to factory default
+                }
+
+                if (_owner != null)
+                {
+                    _owner.SetDeviceCustomName(dev.Id, newName);
+                    UpdateData(_owner.VisibleDevices);
+                }
+            };
+
+            renameBox.KeyDown += (s, e) =>
+            {
+                if (e.Key == Key.Enter)
+                {
+                    finishRename();
+                    e.Handled = true;
+                }
+                else if (e.Key == Key.Escape)
+                {
+                    renameBox.Visibility = Visibility.Collapsed;
+                    titleRow.Visibility = Visibility.Visible;
+                    e.Handled = true;
+                }
+            };
+
+            renameBox.LostFocus += (s, e) =>
+            {
+                finishRename();
+            };
 
             var batteryRow = new StackPanel
             {
@@ -361,7 +373,7 @@ namespace OmniHidTaskbar.UI
 
             var percentText = new TextBlock
             {
-                Foreground = isDark ? Brushes.White : Brushes.Black,
+                Foreground = DwmHelper.GetPrimaryTextBrush(isDark),
                 FontSize = 15.5,
                 FontWeight = FontWeights.SemiBold,
                 Text = dev.IsConnected && dev.BatteryPercent >= 0 ? (dev.BatteryPercent + "%") : "--%"
@@ -419,7 +431,7 @@ namespace OmniHidTaskbar.UI
                         CornerRadius = new CornerRadius(2),
                         Background = dev.IsCharging ?
                             new SolidColorBrush(Color.FromRgb(30, 215, 96)) :
-                            (dev.BatteryPercent <= 20 ? new SolidColorBrush(Color.FromRgb(225, 40, 40)) : (isDark ? Brushes.White : new SolidColorBrush(Color.FromRgb(26, 26, 26)))),
+                            (dev.BatteryPercent <= 20 ? new SolidColorBrush(Color.FromRgb(225, 40, 40)) : DwmHelper.GetAccentBrush(isDark)),
                         HorizontalAlignment = HorizontalAlignment.Stretch
                     };
                     Grid.SetColumn(barFill, 0);
@@ -464,7 +476,7 @@ namespace OmniHidTaskbar.UI
             var timeBlock = new TextBlock
             {
                 Text = subText,
-                Foreground = isDark ? new SolidColorBrush(Color.FromRgb(165, 165, 165)) : Brushes.Gray,
+                Foreground = DwmHelper.GetSecondaryTextBrush(isDark),
                 FontSize = 10.5,
                 TextWrapping = TextWrapping.Wrap
             };
@@ -473,55 +485,256 @@ namespace OmniHidTaskbar.UI
             Grid.SetColumn(infoPanel, 1);
             cardGrid.Children.Add(infoPanel);
 
-            // Settings gear button if device supports settings
-            if (dev.SupportsSettings)
+            // Right-side actions grid: Hide eye button in top-right corner, Drag handle in center
+            var rightColumn = new Grid
             {
-                var gearBtn = new Border
-                {
-                    Width = 22,
-                    Height = 22,
-                    CornerRadius = new CornerRadius(4),
-                    HorizontalAlignment = HorizontalAlignment.Right,
-                    VerticalAlignment = VerticalAlignment.Bottom,
-                    Cursor = Cursors.Hand,
-                    ToolTip = "Sleep Timer Settings",
-                    Background = Brushes.Transparent,
-                    Child = new TextBlock
-                    {
-                        Text = "\uE713",
-                        FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
-                        FontSize = 13,
-                        Foreground = isDark ? new SolidColorBrush(Color.FromRgb(150, 150, 150)) : Brushes.Gray,
-                        HorizontalAlignment = HorizontalAlignment.Center,
-                        VerticalAlignment = VerticalAlignment.Center
-                    }
-                };
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                Width = 22
+            };
+            rightColumn.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            rightColumn.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-                gearBtn.MouseEnter += (s, e) =>
+            // Hide from taskbar button (crossed eye) in top-right corner, on same level as title
+            var hideBtn = new Border
+            {
+                Width = 20,
+                Height = 20,
+                CornerRadius = new CornerRadius(3),
+                VerticalAlignment = VerticalAlignment.Top,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Cursor = Cursors.Hand,
+                ToolTip = "Hide device from taskbar",
+                Background = Brushes.Transparent,
+                Child = new TextBlock
                 {
-                    bool currentDark = _owner != null ? _owner.IsDarkTheme : true;
-                    gearBtn.Background = currentDark ? new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(30, 0, 0, 0));
-                };
-                gearBtn.MouseLeave += (s, e) =>
+                    Text = "\uED1A", // Segoe MDL2 Hide glyph
+                    FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                    FontSize = 11.5,
+                    Foreground = isDark ? new SolidColorBrush(Color.FromRgb(140, 140, 140)) : Brushes.Gray,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center
+                }
+            };
+            hideBtn.MouseEnter += (s, e) =>
+            {
+                bool currentDark = _owner != null ? _owner.IsDarkTheme : true;
+                hideBtn.Background = currentDark ? new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(30, 0, 0, 0));
+            };
+            hideBtn.MouseLeave += (s, e) =>
+            {
+                hideBtn.Background = Brushes.Transparent;
+            };
+            string targetHideKey = !string.IsNullOrEmpty(dev.Id) ? dev.Id : dev.Name;
+            hideBtn.MouseLeftButtonUp += (s, e) =>
+            {
+                if (_owner != null)
                 {
-                    gearBtn.Background = Brushes.Transparent;
-                };
+                    _owner.SetDeviceVisibility(targetHideKey, false);
+                }
+            };
+            Grid.SetRow(hideBtn, 0);
+            rightColumn.Children.Add(hideBtn);
 
-                string devId = dev.Id;
-                gearBtn.MouseLeftButtonUp += (s, e) =>
-                {
-                    _activeSettingsDeviceId = devId;
-                    _cardsStack.Visibility = Visibility.Collapsed;
-                    _settingsView.Visibility = Visibility.Visible;
-                };
+            // Drag handle with 6 vector dots (2 columns x 3 rows) centered vertically
+            var dragHandle = new Border
+            {
+                Width = 20,
+                Height = 26,
+                CornerRadius = new CornerRadius(3),
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Cursor = Cursors.SizeAll,
+                ToolTip = "Drag to reorder",
+                Background = Brushes.Transparent
+            };
 
-                Grid.SetColumn(gearBtn, 2);
-                cardGrid.Children.Add(gearBtn);
+            var dotBrush = isDark ? new SolidColorBrush(Color.FromRgb(140, 140, 140)) : new SolidColorBrush(Color.FromRgb(150, 150, 150));
+            var gripperCanvas = new Canvas
+            {
+                Width = 7,
+                Height = 13,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                IsHitTestVisible = false
+            };
+
+            var dotEllipses = new List<System.Windows.Shapes.Ellipse>();
+            double[] dotY = new double[] { 0, 5, 10 };
+            for (int r = 0; r < 3; r++)
+            {
+                var dot1 = new System.Windows.Shapes.Ellipse
+                {
+                    Width = 2.5,
+                    Height = 2.5,
+                    Fill = dotBrush
+                };
+                Canvas.SetLeft(dot1, 0);
+                Canvas.SetTop(dot1, dotY[r]);
+                gripperCanvas.Children.Add(dot1);
+                dotEllipses.Add(dot1);
+
+                var dot2 = new System.Windows.Shapes.Ellipse
+                {
+                    Width = 2.5,
+                    Height = 2.5,
+                    Fill = dotBrush
+                };
+                Canvas.SetLeft(dot2, 4.5);
+                Canvas.SetTop(dot2, dotY[r]);
+                gripperCanvas.Children.Add(dot2);
+                dotEllipses.Add(dot2);
             }
+            dragHandle.Child = gripperCanvas;
 
-            return cardGrid;
+            dragHandle.MouseEnter += (s, e) =>
+            {
+                bool currentDark = _owner != null ? _owner.IsDarkTheme : true;
+                dragHandle.Background = currentDark ? new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(30, 0, 0, 0));
+                var activeBrush = currentDark ? Brushes.White : Brushes.Black;
+                for (int i = 0; i < dotEllipses.Count; i++)
+                {
+                    dotEllipses[i].Fill = activeBrush;
+                }
+            };
+            dragHandle.MouseLeave += (s, e) =>
+            {
+                if (!dragHandle.IsMouseCaptured)
+                {
+                    dragHandle.Background = Brushes.Transparent;
+                    bool currentDark = _owner != null ? _owner.IsDarkTheme : true;
+                    var idleBrush = currentDark ? new SolidColorBrush(Color.FromRgb(140, 140, 140)) : new SolidColorBrush(Color.FromRgb(150, 150, 150));
+                    for (int i = 0; i < dotEllipses.Count; i++)
+                    {
+                        dotEllipses[i].Fill = idleBrush;
+                    }
+                }
+            };
+
+            dragHandle.PreviewMouseLeftButtonDown += (s, e) =>
+            {
+                _dragSourceIndex = _cardsStack.Children.IndexOf(cardContainer);
+                if (_dragSourceIndex < 0) return;
+                _dragStartPos = e.GetPosition(_cardsStack);
+                _draggingCardBorder = cardContainer;
+                _isDraggingActive = false;
+                dragHandle.CaptureMouse();
+                e.Handled = true;
+            };
+
+            dragHandle.PreviewMouseMove += (s, e) =>
+            {
+                if (!dragHandle.IsMouseCaptured || _draggingCardBorder == null || _dragSourceIndex < 0) return;
+
+                Point cur = e.GetPosition(_cardsStack);
+                double deltaY = cur.Y - _dragStartPos.Y;
+
+                if (!_isDraggingActive && Math.Abs(deltaY) > 4)
+                {
+                    _isDraggingActive = true;
+                    _draggingCardBorder.Opacity = 0.55;
+                }
+
+                if (_isDraggingActive)
+                {
+                    int targetIdx = -1;
+                    for (int j = 0; j < _cardsStack.Children.Count; j++)
+                    {
+                        var child = _cardsStack.Children[j] as FrameworkElement;
+                        if (child == null) continue;
+                        Point pt = child.TranslatePoint(new Point(0, 0), _cardsStack);
+                        if (cur.Y >= pt.Y && cur.Y <= pt.Y + child.ActualHeight)
+                        {
+                            targetIdx = j;
+                            break;
+                        }
+                    }
+
+                    if (targetIdx >= 0 && targetIdx != _dragSourceIndex && targetIdx < _currentDevices.Count)
+                    {
+                        _cardsStack.Children.Remove(_draggingCardBorder);
+                        _cardsStack.Children.Insert(targetIdx, _draggingCardBorder);
+
+                        var movedDev = _currentDevices[_dragSourceIndex];
+                        _currentDevices.RemoveAt(_dragSourceIndex);
+                        _currentDevices.Insert(targetIdx, movedDev);
+
+                        _dragSourceIndex = targetIdx;
+                        RefreshCardSeparators(isDark);
+
+                        if (_owner != null)
+                        {
+                            _owner.UpdateDeviceOrder(_currentDevices.Select(d => d.Id).ToList());
+                        }
+                    }
+                }
+            };
+
+            dragHandle.PreviewMouseLeftButtonUp += (s, e) =>
+            {
+                if (dragHandle.IsMouseCaptured)
+                {
+                    dragHandle.ReleaseMouseCapture();
+                }
+
+                if (_draggingCardBorder != null)
+                {
+                    _draggingCardBorder.Opacity = 1.0;
+                    _draggingCardBorder = null;
+                }
+
+                if (_isDraggingActive)
+                {
+                    _isDraggingActive = false;
+                    _dragSourceIndex = -1;
+                    RefreshCardSeparators(isDark);
+
+                    if (_owner != null)
+                    {
+                        _owner.UpdateDeviceOrder(_currentDevices.Select(d => d.Id).ToList());
+                    }
+                }
+            };
+
+            Grid.SetRow(dragHandle, 1);
+            rightColumn.Children.Add(dragHandle);
+
+            Grid.SetColumn(rightColumn, 2);
+            cardGrid.Children.Add(rightColumn);
+
+            cardContainer.Child = cardGrid;
+            return cardContainer;
         }
 
+        /// <summary>
+        /// Re-applies bottom separator borders to child card containers based on their current visual stack order.
+        /// </summary>
+        /// <param name="isDark"><c>true</c> if dark theme is currently active.</param>
+        private void RefreshCardSeparators(bool isDark)
+        {
+            var borderBrush = DwmHelper.GetSubtleBorderBrush(isDark);
+            for (int i = 0; i < _cardsStack.Children.Count; i++)
+            {
+                var border = _cardsStack.Children[i] as Border;
+                if (border != null)
+                {
+                    bool isLast = (i == _cardsStack.Children.Count - 1);
+                    border.BorderThickness = isLast ? new Thickness(0) : new Thickness(0, 0, 0, 1);
+                    border.BorderBrush = borderBrush;
+                }
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Hardware Battery Runtime Estimation
+        // ═══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Retrieves manufacturer rated battery endurance hours for known wireless headsets
+        /// when firmware protocol does not report exact minutes remaining.
+        /// </summary>
+        /// <param name="deviceName">Peripheral model name.</param>
+        /// <returns>Rated battery endurance in hours.</returns>
         private static double GetModelMaxBatteryHours(string deviceName)
         {
             if (string.IsNullOrEmpty(deviceName)) return 50.0;
@@ -538,23 +751,20 @@ namespace OmniHidTaskbar.UI
             return 50.0;
         }
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // Theme & Visual Styling
+        // ═══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Updates foreground brushes, acrylic card background, and DWM window dark mode attributes.
+        /// </summary>
+        /// <param name="isDark"><c>true</c> for dark mode; <c>false</c> for light mode.</param>
         public void UpdateTheme(bool isDark)
         {
             try
             {
-                _rootBorder.Background = new SolidColorBrush(isDark ? Color.FromArgb(245, 28, 28, 28) : Color.FromArgb(248, 250, 250, 250));
-                _rootBorder.BorderBrush = new SolidColorBrush(isDark ? Color.FromArgb(80, 255, 255, 255) : Color.FromArgb(60, 0, 0, 0));
-
-                var brush = isDark ? Brushes.White : Brushes.Black;
-                _backIcon.Foreground = brush;
-                _settingsTitle.Foreground = brush;
-
-                for (int i = 0; i < _sleepButtonBorders.Count; i++)
-                {
-                    _sleepButtonBorders[i].Background = isDark ? new SolidColorBrush(Color.FromArgb(35, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(20, 0, 0, 0));
-                    _sleepButtonBorders[i].BorderBrush = isDark ? new SolidColorBrush(Color.FromArgb(45, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(30, 0, 0, 0));
-                    _sleepButtonTexts[i].Foreground = brush;
-                }
+                _rootBorder.Background = isDark ? new SolidColorBrush(Color.FromArgb(240, 28, 28, 28)) : new SolidColorBrush(Color.FromArgb(246, 250, 250, 250));
+                _rootBorder.BorderBrush = DwmHelper.GetSubtleBorderBrush(isDark);
 
                 var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
                 if (hwnd != IntPtr.Zero)
@@ -574,6 +784,14 @@ namespace OmniHidTaskbar.UI
             catch { }
         }
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // Positioning & Screen Geometry Clamping
+        // ═══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Re-computes DPI-aware screen coordinates, clamping the flyout within the active monitor's
+        /// work area and maintaining a consistent 14 DIP spacing gap above the taskbar widget.
+        /// </summary>
         public void UpdateClampedPosition()
         {
             try
@@ -586,7 +804,7 @@ namespace OmniHidTaskbar.UI
                 double dpiY = source != null ? source.CompositionTarget.TransformToDevice.M22 : 1.0;
 
                 IntPtr hMonitor = MonitorFromWindow(ownerHwnd != IntPtr.Zero ? ownerHwnd : hwnd, 2);
-                OverlayWindow.MONITORINFO mi = new OverlayWindow.MONITORINFO();
+                TaskbarHelper.MONITORINFO mi = new TaskbarHelper.MONITORINFO();
                 mi.cbSize = Marshal.SizeOf(mi);
 
                 double workLeft, workTop, workRight, workBottom;
@@ -645,6 +863,15 @@ namespace OmniHidTaskbar.UI
             catch { }
         }
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // Window Presentation & Cloaking Lifecycle
+        // ═══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Displays the flyout using a two-phase cloaked render pass to guarantee pixel-perfect positioning
+        /// and zero animation stutter or misplaced initial frames.
+        /// </summary>
+        /// <param name="devices">Current peripheral states to populate.</param>
         public void ShowFlyout(List<TaskbarDeviceState> devices)
         {
             try
@@ -656,22 +883,19 @@ namespace OmniHidTaskbar.UI
                     UpdateData(devices);
                 }
 
-                _settingsView.Visibility = Visibility.Collapsed;
-                _statusFeedbackText.Visibility = Visibility.Collapsed;
-                _cardsStack.Visibility = Visibility.Visible;
-
                 DwmHelper.BoostCompositorClock(true);
 
                 var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
                 if (hwnd != IntPtr.Zero)
                 {
                     DwmHelper.EnableWindowTransitions(hwnd, false);
-                    DwmHelper.CloakWindow(hwnd, true);
+                    DwmHelper.CloakWindow(hwnd, true); // Keep hidden during layout calculation
                 }
 
                 this.Visibility = Visibility.Visible;
                 this.Show();
 
+                // Uncloak and activate once the render tree has completed layout pass
                 this.Dispatcher.BeginInvoke(DispatcherPriority.Render, new Action(() =>
                 {
                     UpdateClampedPosition();
@@ -692,10 +916,21 @@ namespace OmniHidTaskbar.UI
             catch { }
         }
 
+        /// <summary>
+        /// Cloaks and hides the flyout window, resetting active dragging and input states.
+        /// </summary>
         public void HideFlyout()
         {
             try
             {
+                if (_draggingCardBorder != null)
+                {
+                    _draggingCardBorder.Opacity = 1.0;
+                    _draggingCardBorder = null;
+                }
+                _isDraggingActive = false;
+                _dragSourceIndex = -1;
+
                 var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
                 if (hwnd != IntPtr.Zero)
                 {

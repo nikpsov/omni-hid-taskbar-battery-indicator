@@ -1,18 +1,29 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Text;
 
 namespace OmniHidTaskbar.Core
 {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Diagnostic Logging & File Rotation Subsystem
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Thread-safe diagnostics logging engine with file rotation, console mirroring,
+    /// and dynamic debug activation via flags, executable name, or registry settings.
+    /// </summary>
     public static class Logger
     {
         private static readonly object _logLock = new object();
         private static readonly string LogFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log");
-        private const long MaxLogFileSizeBytes = 1024 * 1024; // 1 MB limit
-        private const int MaxLogFileBackups = 2; // Keep at most debug.log.1 and debug.log.2
+        private const long MaxLogFileSizeBytes = 1024 * 1024; // 1 MB limit per log file
+        private const int MaxLogFileBackups = 2; // Retain at most debug.log.1 and debug.log.2
 
         private static bool? _isDebugLoggingEnabled = null;
 
+        /// <summary>
+        /// Gets or sets whether diagnostic log statements are written to stdout and <c>debug.log</c>.
+        /// </summary>
         public static bool IsDebugLoggingEnabled
         {
             get
@@ -29,6 +40,14 @@ namespace OmniHidTaskbar.Core
             }
         }
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // Diagnostics Activation Detection
+        // ═══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Inspects command-line arguments, binary filename, and registry keys to decide whether debug logging is active.
+        /// </summary>
+        /// <returns><c>true</c> if debug output is requested; otherwise <c>false</c>.</returns>
         private static bool DetermineDebugLogging()
         {
 #if DEBUG_LOG || DEBUG
@@ -51,9 +70,8 @@ namespace OmniHidTaskbar.Core
                 if (!string.IsNullOrEmpty(processName) && processName.IndexOf("Debug", StringComparison.OrdinalIgnoreCase) >= 0)
                     return true;
 
-                // Check registry setting
-                using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\OmniHidTaskbar") ??
-                                 Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\OmniHidTaskbar"))
+                // Check HKCU\Software\OmniHidTaskbar registry setting
+                using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\OmniHidTaskbar"))
                 {
                     if (key != null)
                     {
@@ -68,6 +86,14 @@ namespace OmniHidTaskbar.Core
 #endif
         }
 
+        // ═══════════════════════════════════════════════════════════════════════
+        // Log Dispatch & Rotation
+        // ═══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Formats and persists a timestamped log entry to console and log file if logging is enabled.
+        /// </summary>
+        /// <param name="message">The informative log message.</param>
         public static void Log(string message)
         {
             if (!IsDebugLoggingEnabled) return;
@@ -90,6 +116,9 @@ namespace OmniHidTaskbar.Core
             }
         }
 
+        /// <summary>
+        /// Rotates the active log file into generation backups (.1, .2) when exceeding <see cref="MaxLogFileSizeBytes"/>.
+        /// </summary>
         private static void RotateLogFilesIfNeeded()
         {
             try

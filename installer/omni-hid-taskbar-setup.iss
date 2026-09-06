@@ -1,6 +1,6 @@
 #define MyAppName "OmniHID Taskbar Battery Indicator"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.0.2"
+  #define MyAppVersion "0.0.3"
 #endif
 #define MyAppPublisher "nikpsov"
 #define MyAppURL "https://github.com/nikpsov/omni-hid-taskbar-battery-indicator"

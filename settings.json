@@ -1,7 +1,10 @@
 {
   "DisplayStyle": 0,
+  "DisplayMode": 0,
   "HideWhenDisconnected": true,
   "RunOnStartup": false,
   "PollIntervalSeconds": 15,
-  "HiddenDevices": []
+  "HiddenDevices": [],
+  "DeviceOrder": [],
+  "CustomDeviceNames": {}
 }
