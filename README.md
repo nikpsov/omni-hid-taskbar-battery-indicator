@@ -43,6 +43,12 @@ Supports mice, keyboards, headsets, and gamepads across major brands and chipset
 
 > For the full list of supported devices and profiles, see the [OmniHID repository](https://github.com/nikpsov/omni-hid).
 
+> [!NOTE]
+> **Experimental Profiles & the `Unverified` Badge:**  
+> Newly added or experimental profiles are marked with a gold **`Unverified`** badge in the Flyout (and tagged `(unverified)` in the context menu). This indicates the profile has been contributed or generated, but awaits testing on physical hardware.
+> - **Device works correctly?** Please open a **[Device Verification Issue](https://github.com/nikpsov/omni-hid/issues/new?template=verify_device.yml)** on the [OmniHID repository](https://github.com/nikpsov/omni-hid) confirming that the battery level and charging/wired status are accurate so we can promote it to verified status!
+> - **Device has bugs or incorrect readings?** Please file an issue on [OmniHID Issues](https://github.com/nikpsov/omni-hid/issues) with details or diagnostic dumps so we can fix the profile.
+
 ---
 
 ## Installation
