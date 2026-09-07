@@ -5,3 +5,4 @@ obj/
 .vs/
 debug.log
 crash.log
+.agents/
