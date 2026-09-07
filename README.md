@@ -122,3 +122,14 @@ Yes. OmniHID uses standard user-mode Win32 HID APIs (<code>CreateFile</code>, <c
 ## License
 
 OmniHID Taskbar Battery Indicator is open-source software released under the [MIT License](LICENSE).
+
+---
+
+## Support & Donations
+
+If you find this project useful and wish to support its development:
+
+- **CloudTips:** [https://pay.cloudtips.ru/p/0886f5f7](https://pay.cloudtips.ru/p/0886f5f7)
+- **USDT (TRC20 / TRON):** `TQpX2ogcFtb1pAnhKrnEioEc6wLZRCh7nv`
+- **USDT (ERC20 / ETH):** `0x6cffDEA7b163850229610CA5Bbe9769E7F07F9e8`
+- **GRAM (TON):** `UQDQpCjTeWYPDu0E8IcbojydBFeVHfRxzfOFFdxxw4gfYKq6`
