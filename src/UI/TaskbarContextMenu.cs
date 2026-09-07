@@ -7,6 +7,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using OmniHidTaskbar.Core;
 
 namespace OmniHidTaskbar.UI
@@ -24,6 +25,64 @@ namespace OmniHidTaskbar.UI
         // ═══════════════════════════════════════════════════════════════════════
         // Style & Template Factories
         // ═══════════════════════════════════════════════════════════════════════
+
+        private static Style _darkContextMenuStyle;
+        private static Style _lightContextMenuStyle;
+        private static Style _darkMenuItemStyle;
+        private static Style _lightMenuItemStyle;
+        private static Style _darkSubmenuHeaderStyle;
+        private static Style _lightSubmenuHeaderStyle;
+        private static volatile bool _isContextMenuOpen;
+
+        /// <summary>
+        /// Gets a value indicating whether the taskbar or tray context menu is currently open.
+        /// </summary>
+        public static bool IsOpen
+        {
+            get { return _isContextMenuOpen; }
+        }
+
+        /// <summary>
+        /// Retrieves a cached <see cref="ContextMenu"/> style for dark or light theme.
+        /// </summary>
+        public static Style GetContextMenuStyle(bool isDark)
+        {
+            if (isDark)
+            {
+                if (_darkContextMenuStyle == null) _darkContextMenuStyle = CreateContextMenuStyle(true);
+                return _darkContextMenuStyle;
+            }
+            if (_lightContextMenuStyle == null) _lightContextMenuStyle = CreateContextMenuStyle(false);
+            return _lightContextMenuStyle;
+        }
+
+        /// <summary>
+        /// Retrieves a cached <see cref="MenuItem"/> style for dark or light theme.
+        /// </summary>
+        public static Style GetMenuItemStyle(bool isDark)
+        {
+            if (isDark)
+            {
+                if (_darkMenuItemStyle == null) _darkMenuItemStyle = CreateMenuItemStyle(true);
+                return _darkMenuItemStyle;
+            }
+            if (_lightMenuItemStyle == null) _lightMenuItemStyle = CreateMenuItemStyle(false);
+            return _lightMenuItemStyle;
+        }
+
+        /// <summary>
+        /// Retrieves a cached submenu header <see cref="MenuItem"/> style for dark or light theme.
+        /// </summary>
+        public static Style GetSubmenuHeaderStyle(bool isDark)
+        {
+            if (isDark)
+            {
+                if (_darkSubmenuHeaderStyle == null) _darkSubmenuHeaderStyle = CreateSubmenuHeaderStyle(true);
+                return _darkSubmenuHeaderStyle;
+            }
+            if (_lightSubmenuHeaderStyle == null) _lightSubmenuHeaderStyle = CreateSubmenuHeaderStyle(false);
+            return _lightSubmenuHeaderStyle;
+        }
 
         /// <summary>
         /// Creates a modern Fluent-styled <see cref="ContextMenu"/> style with rounded corners,
@@ -320,10 +379,10 @@ namespace OmniHidTaskbar.UI
                 DwmHelper.SetDarkMode(hwnd, isDark);
             }
 
-            var itemStyle = CreateMenuItemStyle(isDark);
+            var itemStyle = GetMenuItemStyle(isDark);
             var menu = new ContextMenu
             {
-                Style = CreateContextMenuStyle(isDark)
+                Style = GetContextMenuStyle(isDark)
             };
 
             if (fromTray)
@@ -379,7 +438,7 @@ namespace OmniHidTaskbar.UI
             var devicesSubmenu = new MenuItem
             {
                 Header = "Device Visibility",
-                Style = CreateSubmenuHeaderStyle(isDark),
+                Style = GetSubmenuHeaderStyle(isDark),
                 ToolTip = "Select which devices to show in the taskbar and flyout"
             };
 
@@ -444,6 +503,23 @@ namespace OmniHidTaskbar.UI
             var exitItem = CreateStyledMenuItem("Exit", itemStyle);
             exitItem.Click += (s, e) => Application.Current.Shutdown();
             menu.Items.Add(exitItem);
+
+            menu.Opened += (s, e) => _isContextMenuOpen = true;
+            menu.Closed += (s, e) =>
+            {
+                _isContextMenuOpen = false;
+                var trimTimer = new DispatcherTimer(DispatcherPriority.Background, menu.Dispatcher)
+                {
+                    Interval = TimeSpan.FromMilliseconds(150)
+                };
+                trimTimer.Tick += (ts, te) =>
+                {
+                    trimTimer.Stop();
+                    menu.Items.Clear();
+                    TaskbarHelper.TrimProcessMemory();
+                };
+                trimTimer.Start();
+            };
 
             menu.IsOpen = true;
         }

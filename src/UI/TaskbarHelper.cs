@@ -30,6 +30,10 @@ namespace OmniHidTaskbar.UI
 
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool IsWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool IsWindowVisible(IntPtr hWnd);
 
         [DllImport("user32.dll")]
@@ -130,24 +134,37 @@ namespace OmniHidTaskbar.UI
         // Taskbar Bounds & Window Geometry Helpers
         // ═══════════════════════════════════════════════════════════════════════
 
+        private static IntPtr _cachedTaskbarHwnd = IntPtr.Zero;
+        private static IntPtr _cachedTrayNotifyHwnd = IntPtr.Zero;
+
         /// <summary>
-        /// Queries the main Windows taskbar window handle (<c>Shell_TrayWnd</c>).
+        /// Queries the primary Windows taskbar window handle (<c>Shell_TrayWnd</c>).
+        /// Caches the handle across queries to eliminate P/Invoke string marshaling allocations.
         /// </summary>
         /// <returns>Window handle to the taskbar, or <c>IntPtr.Zero</c> if not found.</returns>
         public static IntPtr GetTaskbarHandle()
         {
-            return FindWindow("Shell_TrayWnd", null);
+            if (!IsWindow(_cachedTaskbarHwnd))
+            {
+                _cachedTaskbarHwnd = FindWindow("Shell_TrayWnd", null);
+            }
+            return _cachedTaskbarHwnd;
         }
 
         /// <summary>
         /// Queries the notification tray container window handle (<c>TrayNotifyWnd</c>).
+        /// Caches the handle across queries to eliminate P/Invoke string marshaling allocations.
         /// </summary>
         /// <param name="taskbarHwnd">Parent taskbar window handle.</param>
         /// <returns>Window handle to the tray area, or <c>IntPtr.Zero</c> if not found.</returns>
         public static IntPtr GetTrayNotifyHandle(IntPtr taskbarHwnd)
         {
             if (taskbarHwnd == IntPtr.Zero) return IntPtr.Zero;
-            return FindWindowEx(taskbarHwnd, IntPtr.Zero, "TrayNotifyWnd", null);
+            if (!IsWindow(_cachedTrayNotifyHwnd))
+            {
+                _cachedTrayNotifyHwnd = FindWindowEx(taskbarHwnd, IntPtr.Zero, "TrayNotifyWnd", null);
+            }
+            return _cachedTrayNotifyHwnd;
         }
 
 
@@ -169,9 +186,16 @@ namespace OmniHidTaskbar.UI
         }
 
 
+        private static IntPtr _cachedDesktopHwnd = IntPtr.Zero;
+        private static IntPtr _cachedShellHwnd = IntPtr.Zero;
+        private static IntPtr _lastFgWnd = IntPtr.Zero;
+        private static bool _lastFgResult = false;
+        private static int _lastFgTick = 0;
+
         /// <summary>
         /// Determines whether the active foreground window is running in true or borderless fullscreen mode
         /// (e.g. immersive 3D games, media players, F11 browser), indicating that the taskbar overlay should be concealed.
+        /// Caches static desktop/shell window handles and recent foreground status to eliminate P/Invoke allocations.
         /// </summary>
         /// <param name="ignoredHwnd1">First window handle to ignore (e.g., overlay window itself).</param>
         /// <param name="ignoredHwnd2">Second window handle to ignore (e.g., flyout window).</param>
@@ -181,38 +205,70 @@ namespace OmniHidTaskbar.UI
             IntPtr fgWnd = GetForegroundWindow();
             if (fgWnd == IntPtr.Zero) return false;
 
-            IntPtr desktop = FindWindow("Progman", null);
-            IntPtr shell = FindWindow("WorkerW", null);
-            IntPtr taskbar = FindWindow("Shell_TrayWnd", null);
-            if (fgWnd == desktop || fgWnd == shell || fgWnd == taskbar) return false;
-
-            // Check if taskbar itself is hidden (e.g. auto-hide or exclusive fullscreen)
-            if (taskbar != IntPtr.Zero && !IsWindowVisible(taskbar))
-            {
-                return true;
-            }
-
             if (fgWnd == ignoredHwnd1 || (ignoredHwnd2 != IntPtr.Zero && fgWnd == ignoredHwnd2))
                 return false;
 
+            int currentTick = Environment.TickCount;
+            if (fgWnd == _lastFgWnd && (currentTick - _lastFgTick) < 1000)
+            {
+                return _lastFgResult;
+            }
+
+            if (!IsWindow(_cachedDesktopHwnd)) _cachedDesktopHwnd = FindWindow("Progman", null);
+            if (!IsWindow(_cachedShellHwnd)) _cachedShellHwnd = FindWindow("WorkerW", null);
+            if (!IsWindow(_cachedTaskbarHwnd)) _cachedTaskbarHwnd = FindWindow("Shell_TrayWnd", null);
+
+            if (fgWnd == _cachedDesktopHwnd || fgWnd == _cachedShellHwnd || fgWnd == _cachedTaskbarHwnd)
+            {
+                _lastFgWnd = fgWnd;
+                _lastFgResult = false;
+                _lastFgTick = currentTick;
+                return false;
+            }
+
+            // Check if taskbar itself is hidden (e.g. auto-hide or exclusive fullscreen)
+            if (_cachedTaskbarHwnd != IntPtr.Zero && !IsWindowVisible(_cachedTaskbarHwnd))
+            {
+                _lastFgWnd = fgWnd;
+                _lastFgResult = true;
+                _lastFgTick = currentTick;
+                return true;
+            }
+
             RECT appBounds;
-            if (!GetWindowRect(fgWnd, out appBounds)) return false;
+            if (!GetWindowRect(fgWnd, out appBounds))
+            {
+                _lastFgWnd = fgWnd;
+                _lastFgResult = false;
+                _lastFgTick = currentTick;
+                return false;
+            }
 
             IntPtr hMonitor = MonitorFromWindow(fgWnd, MONITOR_DEFAULTTONEAREST);
-            if (hMonitor == IntPtr.Zero) return false;
+            if (hMonitor == IntPtr.Zero)
+            {
+                _lastFgWnd = fgWnd;
+                _lastFgResult = false;
+                _lastFgTick = currentTick;
+                return false;
+            }
 
             MONITORINFO mi = new MONITORINFO();
             mi.cbSize = Marshal.SizeOf(mi);
+            bool isFs = false;
             if (GetMonitorInfo(hMonitor, ref mi))
             {
                 // Fullscreen if foreground window covers or exceeds the monitor physical display
-                return appBounds.Left <= mi.rcMonitor.Left &&
-                       appBounds.Top <= mi.rcMonitor.Top &&
-                       appBounds.Right >= mi.rcMonitor.Right &&
-                       appBounds.Bottom >= mi.rcMonitor.Bottom;
+                isFs = (appBounds.Left <= mi.rcMonitor.Left &&
+                        appBounds.Top <= mi.rcMonitor.Top &&
+                        appBounds.Right >= mi.rcMonitor.Right &&
+                        appBounds.Bottom >= mi.rcMonitor.Bottom);
             }
 
-            return false;
+            _lastFgWnd = fgWnd;
+            _lastFgResult = isFs;
+            _lastFgTick = currentTick;
+            return isFs;
         }
 
         /// <summary>

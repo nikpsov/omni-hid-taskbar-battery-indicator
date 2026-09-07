@@ -62,6 +62,10 @@ namespace OmniHidTaskbar.UI
         private bool _isBackgroundMode = false;
         private bool _isSessionLocked = false;
         private Visibility _lastVisibility = Visibility.Visible;
+        private IntPtr _overlayHwnd = IntPtr.Zero;
+        private double _dpiX = 1.0;
+        private double _dpiY = 1.0;
+        private bool _dpiInitialized = false;
 
         private static readonly FontFamily IconFont = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets");
         private static readonly FontFamily TextFont = new FontFamily("Segoe UI Variable Display, Segoe UI");
@@ -193,13 +197,14 @@ namespace OmniHidTaskbar.UI
 
                 Microsoft.Win32.SystemEvents.SessionSwitch += OnSessionSwitch;
 
+                _overlayHwnd = hwnd;
                 SetupHooks();
                 UpdatePosition();
 
-                // Relaxed background heartbeat timer (500ms at Background priority) for geometry verification.
+                // Relaxed background heartbeat timer (2000ms at Background priority) for geometry verification.
                 // Win32 hooks (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, EVENT_OBJECT_LOCATIONCHANGE)
                 // handle instantaneous real-time window, taskbar, and Alt+Tab updates.
-                _positionTimer = new DispatcherTimer(DispatcherPriority.Background, this.Dispatcher) { Interval = TimeSpan.FromMilliseconds(500) };
+                _positionTimer = new DispatcherTimer(DispatcherPriority.Background, this.Dispatcher) { Interval = TimeSpan.FromMilliseconds(2000) };
                 _positionTimer.Tick += (ts, te) => UpdatePosition();
                 _positionTimer.Start();
 
@@ -298,12 +303,51 @@ namespace OmniHidTaskbar.UI
         // ═══════════════════════════════════════════════════════════════════════
 
         /// <summary>
+        /// Compares newly acquired peripheral telemetry with current device state snapshots
+        /// to determine whether any visual or telemetry property actually changed.
+        /// Performs a zero-allocation check before dispatching work to the WPF UI thread.
+        /// </summary>
+        /// <param name="devices">Newly acquired peripheral device list.</param>
+        /// <returns><c>true</c> if any device was added, removed, or changed telemetry; otherwise <c>false</c>.</returns>
+        private bool HasDevicesStateChanged(IReadOnlyList<IOmniDevice> devices)
+        {
+            var prev = _latestDevices;
+            if (devices == null && (prev == null || prev.Count == 0)) return false;
+            if (devices == null || prev == null) return true;
+            if (devices.Count != prev.Count) return true;
+
+            for (int i = 0; i < devices.Count; i++)
+            {
+                var d = devices[i];
+                var p = prev[i];
+                if (d == null && p == null) continue;
+                if (d == null || p == null) return true;
+
+                if (!string.Equals(d.Id, p.Id, StringComparison.Ordinal)) return true;
+                if (d.IsConnected != p.IsConnected) return true;
+
+                var tel = d.Telemetry;
+                int level = tel != null ? tel.LevelPercent : -1;
+                bool charging = tel != null && tel.IsCharging;
+                bool wired = d.IsWired;
+                if (level != p.BatteryPercent || charging != p.IsCharging || wired != p.IsWired)
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
         /// Callback executed when the OmniHID engine broadcasts updated peripheral battery telemetry.
-        /// Dispatches snapshot mapping and UI rendering to the WPF UI thread.
+        /// Dispatches snapshot mapping and UI rendering to the WPF UI thread only if device states changed.
         /// </summary>
         /// <param name="devices">Read-only list of active OmniHID peripheral device abstractions.</param>
         private void OnOmniDevicesUpdated(IReadOnlyList<IOmniDevice> devices)
         {
+            if (!HasDevicesStateChanged(devices))
+            {
+                return;
+            }
+
             Logger.Log(string.Format("OmniHID update received: {0} device(s)", devices != null ? devices.Count : 0));
             this.Dispatcher.BeginInvoke(new Action(() =>
             {
@@ -966,7 +1010,7 @@ namespace OmniHidTaskbar.UI
                 }
                 if (_positionTimer != null)
                 {
-                    _positionTimer.Interval = TimeSpan.FromMilliseconds(2500);
+                    _positionTimer.Interval = TimeSpan.FromMilliseconds(5000);
                 }
             }
             else
@@ -980,7 +1024,7 @@ namespace OmniHidTaskbar.UI
                 }
                 if (_positionTimer != null)
                 {
-                    _positionTimer.Interval = TimeSpan.FromMilliseconds(500);
+                    _positionTimer.Interval = TimeSpan.FromMilliseconds(2000);
                 }
                 UpdatePosition();
             }
@@ -1022,8 +1066,8 @@ namespace OmniHidTaskbar.UI
             _isUpdatingPosition = true;
             try
             {
-                var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-                IntPtr flyoutHwnd = _flyout != null ? new System.Windows.Interop.WindowInteropHelper(_flyout).Handle : IntPtr.Zero;
+                var hwnd = _overlayHwnd != IntPtr.Zero ? _overlayHwnd : new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                IntPtr flyoutHwnd = (_flyout != null && _flyout.IsVisible) ? new System.Windows.Interop.WindowInteropHelper(_flyout).Handle : IntPtr.Zero;
                 bool isFullscreen = TaskbarHelper.IsForegroundFullscreen(hwnd, flyoutHwnd);
                 if (isFullscreen != _lastFullscreen)
                 {
@@ -1056,9 +1100,19 @@ namespace OmniHidTaskbar.UI
                 TaskbarHelper.RECT tbRect;
                 if (!TaskbarHelper.GetWindowRect(taskbar, out tbRect)) return;
 
-                var source = PresentationSource.FromVisual(this);
-                double dpiX = source != null ? source.CompositionTarget.TransformToDevice.M11 : 1.0;
-                double dpiY = source != null ? source.CompositionTarget.TransformToDevice.M22 : 1.0;
+                if (!_dpiInitialized)
+                {
+                    var source = PresentationSource.FromVisual(this);
+                    if (source != null && source.CompositionTarget != null)
+                    {
+                        _dpiX = source.CompositionTarget.TransformToDevice.M11;
+                        _dpiY = source.CompositionTarget.TransformToDevice.M22;
+                        _dpiInitialized = true;
+                    }
+                }
+
+                double dpiX = _dpiX > 0 ? _dpiX : 1.0;
+                double dpiY = _dpiY > 0 ? _dpiY : 1.0;
 
                 int physicalWidth = (int)(this.Width * dpiX);
                 int physicalHeight = (int)(this.Height * dpiY);
@@ -1118,11 +1172,12 @@ namespace OmniHidTaskbar.UI
         /// Queries the Windows registry to inspect the system theme preference (<c>SystemUsesLightTheme</c>),
         /// dynamically applying dark mode DWM styling, tray icon colors, flyout styling, and widget rendering.
         /// </summary>
-        private void UpdateTheme()
+        /// <param name="force"><c>true</c> to bypass the 10-second throttle interval (e.g. on WM_SETTINGCHANGE).</param>
+        private void UpdateTheme(bool force = false)
         {
             try
             {
-                if ((DateTime.Now - _lastThemeCheckTime).TotalMilliseconds < 1000)
+                if (!force && (DateTime.Now - _lastThemeCheckTime).TotalMilliseconds < 10000)
                     return;
                 _lastThemeCheckTime = DateTime.Now;
 
@@ -1293,12 +1348,14 @@ namespace OmniHidTaskbar.UI
         private const int DBT_DEVICEARRIVAL = 0x8000;
         private const int DBT_DEVICEREMOVECOMPLETE = 0x8004;
         private const int DBT_DEVNODES_CHANGED = 0x0007;
+        private const int WM_SETTINGCHANGE = 0x001A;
+        private const int WM_THEMECHANGED = 0x031A;
 
         private DateTime _lastDeviceChangePoll = DateTime.MinValue;
 
         /// <summary>
         /// Native window procedure hook intercepting broadcast Windows messages.
-        /// Detects USB and HID hardware arrival/removal events (<c>WM_DEVICECHANGE</c>) to force a device telemetry refresh.
+        /// Detects USB/HID arrival/removal events (<c>WM_DEVICECHANGE</c>) and system theme updates (<c>WM_SETTINGCHANGE</c>).
         /// </summary>
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
@@ -1314,6 +1371,10 @@ namespace OmniHidTaskbar.UI
                         if (_omniManager != null) _omniManager.ForceRefresh();
                     }
                 }
+            }
+            else if (msg == WM_SETTINGCHANGE || msg == WM_THEMECHANGED)
+            {
+                UpdateTheme(force: true);
             }
             return IntPtr.Zero;
         }
