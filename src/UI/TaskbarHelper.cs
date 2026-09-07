@@ -229,7 +229,7 @@ namespace OmniHidTaskbar.UI
                 return false;
 
             MONITORINFO mi = new MONITORINFO();
-            mi.cbSize = Marshal.SizeOf(mi);
+            mi.cbSize = 40;
             if (GetMonitorInfo(hMonitor, ref mi))
             {
                 // Fullscreen if foreground window covers or exceeds the monitor physical display (with 2px tolerance for DPI rounding)

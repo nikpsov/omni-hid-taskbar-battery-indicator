@@ -44,6 +44,52 @@ namespace OmniHidTaskbar.UI
         private readonly Border _rootBorder;
         private readonly StackPanel _cardsStack;
         private List<TaskbarDeviceState> _currentDevices = new List<TaskbarDeviceState>();
+        private List<TaskbarDeviceState> _stashedDevices = null;
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // Static Frozen Brushes & Typography Descriptors (Zero Heap Churn)
+        // ═══════════════════════════════════════════════════════════════════════
+
+        private static readonly FontFamily IconFontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets");
+
+        private static SolidColorBrush CreateFrozenBrush(Color color)
+        {
+            var brush = new SolidColorBrush(color);
+            brush.Freeze();
+            return brush;
+        }
+
+        private static readonly SolidColorBrush FlyoutBackgroundDark = CreateFrozenBrush(Color.FromArgb(240, 28, 28, 28));
+        private static readonly SolidColorBrush FlyoutBackgroundLight = CreateFrozenBrush(Color.FromArgb(246, 250, 250, 250));
+
+        private static readonly SolidColorBrush CardSeparatorDark = CreateFrozenBrush(Color.FromArgb(35, 255, 255, 255));
+        private static readonly SolidColorBrush CardSeparatorLight = CreateFrozenBrush(Color.FromArgb(20, 0, 0, 0));
+
+        private static readonly SolidColorBrush RenameBoxBgDark = CreateFrozenBrush(Color.FromArgb(50, 255, 255, 255));
+        private static readonly SolidColorBrush RenameBoxBgLight = CreateFrozenBrush(Color.FromArgb(20, 0, 0, 0));
+        private static readonly SolidColorBrush RenameBoxBorderDark = CreateFrozenBrush(Color.FromArgb(90, 255, 255, 255));
+        private static readonly SolidColorBrush RenameBoxBorderLight = CreateFrozenBrush(Color.FromArgb(60, 0, 0, 0));
+
+        private static readonly SolidColorBrush ModelTextDark = CreateFrozenBrush(Color.FromRgb(140, 140, 140));
+        private static readonly SolidColorBrush ModelTextLight = CreateFrozenBrush(Color.FromRgb(120, 120, 120));
+
+        private static readonly SolidColorBrush ChargingPillBgDark = CreateFrozenBrush(Color.FromArgb(40, 30, 215, 96));
+        private static readonly SolidColorBrush ChargingPillBgLight = CreateFrozenBrush(Color.FromArgb(30, 16, 124, 65));
+        private static readonly SolidColorBrush ChargingPillBorderDark = CreateFrozenBrush(Color.FromArgb(120, 30, 215, 96));
+        private static readonly SolidColorBrush ChargingPillBorderLight = CreateFrozenBrush(Color.FromArgb(100, 16, 124, 65));
+        private static readonly SolidColorBrush ChargingPillFgDark = CreateFrozenBrush(Color.FromRgb(50, 230, 110));
+        private static readonly SolidColorBrush ChargingPillFgLight = CreateFrozenBrush(Color.FromRgb(16, 124, 65));
+
+        private static readonly SolidColorBrush ProgressBarBgDark = CreateFrozenBrush(Color.FromArgb(35, 255, 255, 255));
+        private static readonly SolidColorBrush ProgressBarBgLight = CreateFrozenBrush(Color.FromArgb(20, 0, 0, 0));
+        private static readonly SolidColorBrush ChargingGreenBrush = CreateFrozenBrush(Color.FromRgb(30, 215, 96));
+        private static readonly SolidColorBrush LowBatteryRedBrush = CreateFrozenBrush(Color.FromRgb(225, 40, 40));
+
+        private static readonly SolidColorBrush ActionButtonDark = CreateFrozenBrush(Color.FromRgb(140, 140, 140));
+        private static readonly SolidColorBrush ActionButtonLight = CreateFrozenBrush(Color.FromRgb(150, 150, 150));
+        private static readonly SolidColorBrush ActionButtonMidDark = CreateFrozenBrush(Color.FromRgb(145, 145, 145));
+        private static readonly SolidColorBrush ButtonHoverDark = CreateFrozenBrush(Color.FromArgb(40, 255, 255, 255));
+        private static readonly SolidColorBrush ButtonHoverLight = CreateFrozenBrush(Color.FromArgb(30, 0, 0, 0));
 
         // ═══════════════════════════════════════════════════════════════════════
         // Drag-and-Drop Reordering State
@@ -69,7 +115,7 @@ namespace OmniHidTaskbar.UI
             _owner = owner;
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
-            Background = new SolidColorBrush(Color.FromArgb(0, 0, 0, 0));
+            Background = Brushes.Transparent;
             Topmost = true;
             ShowInTaskbar = false;
             Width = 310;
@@ -79,23 +125,13 @@ namespace OmniHidTaskbar.UI
 
             _rootBorder = new Border
             {
-                Background = isDark ? new SolidColorBrush(Color.FromArgb(240, 28, 28, 28)) : new SolidColorBrush(Color.FromArgb(246, 250, 250, 250)),
+                Background = isDark ? FlyoutBackgroundDark : FlyoutBackgroundLight,
                 BorderBrush = DwmHelper.GetSubtleBorderBrush(isDark),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(10),
                 Padding = new Thickness(12),
-                Margin = new Thickness(6) // 6 DIP window border margin allows drop shadow without clipping
+                Margin = new Thickness(0)
             };
-
-            var dropShadow = new System.Windows.Media.Effects.DropShadowEffect
-            {
-                BlurRadius = 18,
-                ShadowDepth = 3,
-                Direction = 270,
-                Color = Colors.Black,
-                Opacity = isDark ? 0.45 : 0.2
-            };
-            _rootBorder.Effect = dropShadow;
 
             _cardsStack = new StackPanel
             {
@@ -109,7 +145,7 @@ namespace OmniHidTaskbar.UI
 
             if (devices != null)
             {
-                UpdateData(devices);
+                UpdateData(devices, force: true);
             }
 
             this.Deactivated += (s, e) => HideFlyout();
@@ -121,10 +157,18 @@ namespace OmniHidTaskbar.UI
 
         /// <summary>
         /// Updates the list of displayed devices, re-rendering cards and triggering dynamic height recalculation.
+        /// If the flyout is currently hidden, stashes device states to eliminate background WPF allocations.
         /// </summary>
         /// <param name="devices">Current snapshot of peripheral telemetry states.</param>
-        public void UpdateData(List<TaskbarDeviceState> devices)
+        /// <param name="force">If true, forces re-rendering even if the window is not currently visible.</param>
+        public void UpdateData(List<TaskbarDeviceState> devices, bool force = false)
         {
+            _stashedDevices = devices;
+            if (!this.IsVisible && !force)
+            {
+                return;
+            }
+
             var visible = _owner != null ? _owner.GetVisibleDevices(devices) : devices;
             _currentDevices = visible != null ? new List<TaskbarDeviceState>(visible) : new List<TaskbarDeviceState>();
 
@@ -141,7 +185,7 @@ namespace OmniHidTaskbar.UI
                 var emptyIcon = new TextBlock
                 {
                     Text = "\uE772",
-                    FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                    FontFamily = IconFontFamily,
                     FontSize = 32,
                     Foreground = Brushes.Gray,
                     HorizontalAlignment = HorizontalAlignment.Center,
@@ -187,9 +231,7 @@ namespace OmniHidTaskbar.UI
             {
                 Padding = new Thickness(0, 4, 0, 8),
                 BorderThickness = isLast ? new Thickness(0) : new Thickness(0, 0, 0, 1),
-                BorderBrush = isDark
-                    ? new SolidColorBrush(Color.FromArgb(35, 255, 255, 255))
-                    : new SolidColorBrush(Color.FromArgb(20, 0, 0, 0)),
+                BorderBrush = isDark ? CardSeparatorDark : CardSeparatorLight,
                 Background = Brushes.Transparent,
                 CornerRadius = new CornerRadius(6)
             };
@@ -209,7 +251,7 @@ namespace OmniHidTaskbar.UI
             var iconBlock = new TextBlock
             {
                 Text = !string.IsNullOrEmpty(dev.IconGlyph) ? dev.IconGlyph : dev.GetDefaultIconGlyph(),
-                FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                FontFamily = IconFontFamily,
                 FontSize = 30,
                 Foreground = DwmHelper.GetPrimaryTextBrush(isDark),
                 VerticalAlignment = VerticalAlignment.Center,
@@ -260,9 +302,9 @@ namespace OmniHidTaskbar.UI
                 Child = new TextBlock
                 {
                     Text = "\uE70F", // Segoe MDL2 Edit pencil
-                    FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                    FontFamily = IconFontFamily,
                     FontSize = 10.5,
-                    Foreground = isDark ? new SolidColorBrush(Color.FromRgb(145, 145, 145)) : Brushes.Gray,
+                    Foreground = isDark ? ActionButtonMidDark : Brushes.Gray,
                     HorizontalAlignment = HorizontalAlignment.Center,
                     VerticalAlignment = VerticalAlignment.Center
                 }
@@ -270,7 +312,7 @@ namespace OmniHidTaskbar.UI
             editBtn.MouseEnter += (s, e) =>
             {
                 bool curDark = _owner != null ? _owner.IsDarkTheme : true;
-                editBtn.Background = curDark ? new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(30, 0, 0, 0));
+                editBtn.Background = curDark ? ButtonHoverDark : ButtonHoverLight;
             };
             editBtn.MouseLeave += (s, e) =>
             {
@@ -291,9 +333,9 @@ namespace OmniHidTaskbar.UI
                 Visibility = Visibility.Collapsed,
                 Height = 22,
                 Padding = new Thickness(3, 1, 3, 1),
-                Background = isDark ? new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(20, 0, 0, 0)),
+                Background = isDark ? RenameBoxBgDark : RenameBoxBgLight,
                 Foreground = isDark ? Brushes.White : Brushes.Black,
-                BorderBrush = isDark ? new SolidColorBrush(Color.FromArgb(90, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(60, 0, 0, 0)),
+                BorderBrush = isDark ? RenameBoxBorderDark : RenameBoxBorderLight,
                 BorderThickness = new Thickness(1)
             };
             infoPanel.Children.Add(renameBox);
@@ -304,7 +346,7 @@ namespace OmniHidTaskbar.UI
                 var originalModelBlock = new TextBlock
                 {
                     Text = dev.Name,
-                    Foreground = isDark ? new SolidColorBrush(Color.FromRgb(140, 140, 140)) : new SolidColorBrush(Color.FromRgb(120, 120, 120)),
+                    Foreground = isDark ? ModelTextDark : ModelTextLight,
                     FontSize = 10,
                     Margin = new Thickness(8, 0, 0, 2),
                     TextTrimming = TextTrimming.CharacterEllipsis,
@@ -388,15 +430,15 @@ namespace OmniHidTaskbar.UI
                     Padding = new Thickness(6, 1, 6, 2),
                     Margin = new Thickness(8, 0, 0, 0),
                     VerticalAlignment = VerticalAlignment.Center,
-                    Background = new SolidColorBrush(isDark ? Color.FromArgb(40, 30, 215, 96) : Color.FromArgb(30, 16, 124, 65)),
-                    BorderBrush = new SolidColorBrush(isDark ? Color.FromArgb(120, 30, 215, 96) : Color.FromArgb(100, 16, 124, 65)),
+                    Background = isDark ? ChargingPillBgDark : ChargingPillBgLight,
+                    BorderBrush = isDark ? ChargingPillBorderDark : ChargingPillBorderLight,
                     BorderThickness = new Thickness(1),
                     Child = new TextBlock
                     {
                         Text = "⚡ Charging",
                         FontSize = 10,
                         FontWeight = FontWeights.SemiBold,
-                        Foreground = new SolidColorBrush(isDark ? Color.FromRgb(50, 230, 110) : Color.FromRgb(16, 124, 65))
+                        Foreground = isDark ? ChargingPillFgDark : ChargingPillFgLight
                     }
                 };
                 batteryRow.Children.Add(chargingPill);
@@ -419,7 +461,7 @@ namespace OmniHidTaskbar.UI
                 var barBg = new Border
                 {
                     CornerRadius = new CornerRadius(2),
-                    Background = isDark ? new SolidColorBrush(Color.FromArgb(35, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(20, 0, 0, 0))
+                    Background = isDark ? ProgressBarBgDark : ProgressBarBgLight
                 };
                 Grid.SetColumnSpan(barBg, 2);
                 progressBar.Children.Add(barBg);
@@ -430,8 +472,8 @@ namespace OmniHidTaskbar.UI
                     {
                         CornerRadius = new CornerRadius(2),
                         Background = dev.IsCharging ?
-                            new SolidColorBrush(Color.FromRgb(30, 215, 96)) :
-                            (dev.BatteryPercent <= 20 ? new SolidColorBrush(Color.FromRgb(225, 40, 40)) : DwmHelper.GetAccentBrush(isDark)),
+                            ChargingGreenBrush :
+                            (dev.BatteryPercent <= 20 ? LowBatteryRedBrush : DwmHelper.GetAccentBrush(isDark)),
                         HorizontalAlignment = HorizontalAlignment.Stretch
                     };
                     Grid.SetColumn(barFill, 0);
@@ -509,9 +551,9 @@ namespace OmniHidTaskbar.UI
                 Child = new TextBlock
                 {
                     Text = "\uED1A", // Segoe MDL2 Hide glyph
-                    FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
+                    FontFamily = IconFontFamily,
                     FontSize = 11.5,
-                    Foreground = isDark ? new SolidColorBrush(Color.FromRgb(140, 140, 140)) : Brushes.Gray,
+                    Foreground = isDark ? ActionButtonDark : Brushes.Gray,
                     HorizontalAlignment = HorizontalAlignment.Center,
                     VerticalAlignment = VerticalAlignment.Center
                 }
@@ -519,7 +561,7 @@ namespace OmniHidTaskbar.UI
             hideBtn.MouseEnter += (s, e) =>
             {
                 bool currentDark = _owner != null ? _owner.IsDarkTheme : true;
-                hideBtn.Background = currentDark ? new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(30, 0, 0, 0));
+                hideBtn.Background = currentDark ? ButtonHoverDark : ButtonHoverLight;
             };
             hideBtn.MouseLeave += (s, e) =>
             {
@@ -549,7 +591,7 @@ namespace OmniHidTaskbar.UI
                 Background = Brushes.Transparent
             };
 
-            var dotBrush = isDark ? new SolidColorBrush(Color.FromRgb(140, 140, 140)) : new SolidColorBrush(Color.FromRgb(150, 150, 150));
+            var dotBrush = isDark ? ActionButtonDark : ActionButtonLight;
             var gripperCanvas = new Canvas
             {
                 Width = 7,
@@ -590,7 +632,7 @@ namespace OmniHidTaskbar.UI
             dragHandle.MouseEnter += (s, e) =>
             {
                 bool currentDark = _owner != null ? _owner.IsDarkTheme : true;
-                dragHandle.Background = currentDark ? new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)) : new SolidColorBrush(Color.FromArgb(30, 0, 0, 0));
+                dragHandle.Background = currentDark ? ButtonHoverDark : ButtonHoverLight;
                 var activeBrush = currentDark ? Brushes.White : Brushes.Black;
                 for (int i = 0; i < dotEllipses.Count; i++)
                 {
@@ -603,7 +645,7 @@ namespace OmniHidTaskbar.UI
                 {
                     dragHandle.Background = Brushes.Transparent;
                     bool currentDark = _owner != null ? _owner.IsDarkTheme : true;
-                    var idleBrush = currentDark ? new SolidColorBrush(Color.FromRgb(140, 140, 140)) : new SolidColorBrush(Color.FromRgb(150, 150, 150));
+                    var idleBrush = currentDark ? ActionButtonDark : ActionButtonLight;
                     for (int i = 0; i < dotEllipses.Count; i++)
                     {
                         dotEllipses[i].Fill = idleBrush;
@@ -712,7 +754,7 @@ namespace OmniHidTaskbar.UI
         /// <param name="isDark"><c>true</c> if dark theme is currently active.</param>
         private void RefreshCardSeparators(bool isDark)
         {
-            var borderBrush = DwmHelper.GetSubtleBorderBrush(isDark);
+            var borderBrush = isDark ? CardSeparatorDark : CardSeparatorLight;
             for (int i = 0; i < _cardsStack.Children.Count; i++)
             {
                 var border = _cardsStack.Children[i] as Border;
@@ -763,7 +805,7 @@ namespace OmniHidTaskbar.UI
         {
             try
             {
-                _rootBorder.Background = isDark ? new SolidColorBrush(Color.FromArgb(240, 28, 28, 28)) : new SolidColorBrush(Color.FromArgb(246, 250, 250, 250));
+                _rootBorder.Background = isDark ? FlyoutBackgroundDark : FlyoutBackgroundLight;
                 _rootBorder.BorderBrush = DwmHelper.GetSubtleBorderBrush(isDark);
 
                 var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
@@ -774,11 +816,11 @@ namespace OmniHidTaskbar.UI
 
                 if (_owner != null)
                 {
-                    UpdateData(_owner.VisibleDevices);
+                    UpdateData(_owner.VisibleDevices, force: this.IsVisible);
                 }
                 else if (_currentDevices != null)
                 {
-                    UpdateData(_currentDevices);
+                    UpdateData(_currentDevices, force: this.IsVisible);
                 }
             }
             catch { }
@@ -805,7 +847,7 @@ namespace OmniHidTaskbar.UI
 
                 IntPtr hMonitor = MonitorFromWindow(ownerHwnd != IntPtr.Zero ? ownerHwnd : hwnd, 2);
                 TaskbarHelper.MONITORINFO mi = new TaskbarHelper.MONITORINFO();
-                mi.cbSize = Marshal.SizeOf(mi);
+                mi.cbSize = 40;
 
                 double workLeft, workTop, workRight, workBottom;
                 if (hMonitor != IntPtr.Zero && GetMonitorInfo(hMonitor, ref mi))
@@ -880,7 +922,11 @@ namespace OmniHidTaskbar.UI
                 UpdateTheme(isDark);
                 if (devices != null)
                 {
-                    UpdateData(devices);
+                    UpdateData(devices, force: true);
+                }
+                else if (_stashedDevices != null)
+                {
+                    UpdateData(_stashedDevices, force: true);
                 }
 
                 DwmHelper.BoostCompositorClock(true);

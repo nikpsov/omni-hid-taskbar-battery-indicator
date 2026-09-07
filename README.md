@@ -71,9 +71,11 @@ Right-click the widget or edit `settings.json`:
 | Setting | Default | Description |
 |---|---|---|
 | `DisplayStyle` | `0` | `0` = Icon + percent (`🎧 85%`), `1` = Battery icon only |
+| `DisplayMode` | `0` | `0` = Taskbar overlay widget, `1` = System tray icon only |
 | `HideWhenDisconnected` | `true` | Hide widget when all devices are sleeping or offline |
 | `RunOnStartup` | `false` | Start automatically with Windows |
-| `PollIntervalSeconds` | `15` | Polling interval in seconds |
+| `PollIntervalSeconds` | `15` | Polling interval in seconds on desktop |
+| `BackgroundPollIntervalSeconds` | `30` | Throttled polling interval in seconds in fullscreen games/lock screen |
 
 ---
 
