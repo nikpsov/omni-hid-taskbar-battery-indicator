@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. 0.1.0)'
+        description: 'Version to release (e.g. 0.2.0)'
         required: false
-        default: '0.1.0'
+        default: '0.2.0'
 
 permissions:
   contents: write
@@ -68,7 +68,7 @@ jobs:
         shell: pwsh
         run: |
           $zipName = "Output\omni-hid-taskbar-v$($env:VERSION)-portable.zip"
-          Compress-Archive -Path bin\OmniHidTaskbar.exe, bin\OmniHidTaskbarDebug.exe, bin\OmniHid.Core.dll, bin\settings.json, README.md, README.ru.md, LICENSE -DestinationPath $zipName -Force
+          Compress-Archive -Path bin\OmniHidTaskbar.exe, bin\OmniHidTaskbarDebug.exe, bin\OmniHid.Core.dll, bin\settings.json, bin\devices, README.md, README.ru.md, LICENSE -DestinationPath $zipName -Force
           Write-Host "Created portable zip: $zipName"
 
       - name: Generate Checksums

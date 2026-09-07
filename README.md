@@ -64,7 +64,11 @@ Output is saved to `bin\`. To update protocols from upstream: `git submodule upd
 
 ---
 
-## Configuration
+## Configuration & Storage
+
+Settings and device catalogs are stored in `%APPDATA%\OmniHid` (or locally in the application folder in portable mode):
+- **Settings:** `%APPDATA%\OmniHid\settings.json`
+- **Device Profiles:** `%APPDATA%\OmniHid\devices\` (`verified/` and `unverified/`)
 
 Right-click the widget or edit `settings.json`:
 
@@ -81,8 +85,12 @@ Right-click the widget or edit `settings.json`:
 
 ## Controls
 
-- **Left-Click:** Open / close detailed Flyout.
-- **Right-Click:** Open settings context menu (display style, startup, refresh).
+- **Left-Click:** Open / close detailed Fluent Flyout (shows device battery status, voltage, and `Unverified` badges for experimental models).
+- **Right-Click:** Open Fluent context menu:
+  - Toggle display style and mode (Widget vs Tray icon).
+  - Manage individual device visibility (`Device Visibility` submenu).
+  - **Update Profiles from GitHub:** Over-The-Air (OTA) synchronization of the latest device profiles directly from GitHub without restarting or reinstalling.
+  - Refresh device info and toggle run on startup.
 
 ---
 

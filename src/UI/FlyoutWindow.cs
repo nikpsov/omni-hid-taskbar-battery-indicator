@@ -320,6 +320,26 @@ namespace OmniHidTaskbar.UI
             };
             titleRow.Children.Add(editBtn);
 
+            if (!dev.IsVerified)
+            {
+                var unverifiedBadge = new Border
+                {
+                    Background = isDark ? new SolidColorBrush(Color.FromArgb(40, 255, 185, 0)) : new SolidColorBrush(Color.FromArgb(30, 216, 120, 0)),
+                    CornerRadius = new CornerRadius(3),
+                    Padding = new Thickness(4, 1, 4, 1),
+                    Margin = new Thickness(6, 0, 0, 0),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    ToolTip = "Experimental/Unverified profile loaded from unverified/",
+                    Child = new TextBlock
+                    {
+                        Text = "Unverified",
+                        FontSize = 9.5,
+                        FontWeight = FontWeights.Medium,
+                        Foreground = isDark ? new SolidColorBrush(Color.FromRgb(255, 200, 60)) : new SolidColorBrush(Color.FromRgb(180, 90, 0))
+                    }
+                };
+                titleRow.Children.Add(unverifiedBadge);
+            }
 
             infoPanel.Children.Add(titleRow);
 

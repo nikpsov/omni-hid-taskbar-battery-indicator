@@ -363,13 +363,15 @@ namespace OmniHidTaskbar.UI
         /// <param name="devicesList">List of all known devices for the visibility submenu.</param>
         /// <param name="onOpenFlyout">Callback to open the Fluent Flyout.</param>
         /// <param name="onRefresh">Callback to trigger an immediate hardware refresh.</param>
+        /// <param name="onReloadProfiles">Callback to reload device profiles from external JSON files.</param>
         public static void Show(
             OverlayWindow owner,
             bool fromTray,
             bool isDark,
             List<TaskbarDeviceState> devicesList,
             Action onOpenFlyout,
-            Action onRefresh)
+            Action onRefresh,
+            Action onReloadProfiles = null)
         {
             if (owner == null) return;
 
@@ -471,6 +473,11 @@ namespace OmniHidTaskbar.UI
                         label = string.Format("{0} (#{1})", label, idx);
                     }
 
+                    if (!d.IsVerified)
+                    {
+                        label = label + " (unverified)";
+                    }
+
                     bool isVisible = owner.IsDeviceVisible(d);
                     var devItem = CreateStyledMenuItem(label, itemStyle, true, isVisible);
                     devItem.StaysOpenOnClick = true;
@@ -498,6 +505,14 @@ namespace OmniHidTaskbar.UI
             var refreshItem = CreateStyledMenuItem("Refresh Device Info", itemStyle);
             refreshItem.Click += (s, e) => onRefresh();
             menu.Items.Add(refreshItem);
+
+            // Update device profiles from GitHub (OTA)
+            if (onReloadProfiles != null)
+            {
+                var updateProfilesItem = CreateStyledMenuItem("Update Profiles from GitHub", itemStyle);
+                updateProfilesItem.Click += (s, e) => onReloadProfiles();
+                menu.Items.Add(updateProfilesItem);
+            }
 
             // Exit application
             var exitItem = CreateStyledMenuItem("Exit", itemStyle);

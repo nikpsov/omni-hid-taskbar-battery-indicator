@@ -157,11 +157,11 @@ namespace OmniHidTaskbar.Core
         }
 
         /// <summary>
-        /// Gets the absolute filepath to <c>settings.json</c> inside user %AppData%\OmniHidTaskbar.
+        /// Gets the absolute filepath to <c>settings.json</c> inside user %AppData%\OmniHid.
         /// </summary>
         private string GetAppDataFilePath()
         {
-            string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "OmniHidTaskbar");
+            string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "OmniHid");
             return Path.Combine(folder, "settings.json");
         }
 

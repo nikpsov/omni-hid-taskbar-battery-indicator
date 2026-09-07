@@ -10,6 +10,7 @@ using System.Windows.Threading;
 using OmniHidTaskbar.Core;
 using OmniHid.Core;
 using OmniHid.Core.Abstractions;
+using OmniHid.Core.Profiles;
 using Brush = System.Windows.Media.Brush;
 using Brushes = System.Windows.Media.Brushes;
 using Color = System.Windows.Media.Color;
@@ -1093,8 +1094,41 @@ namespace OmniHidTaskbar.UI
                 isDark: IsDarkTheme,
                 devicesList: _allKnownDevices.Values.ToList(),
                 onOpenFlyout: ShowFlyout,
-                onRefresh: () => { if (_omniManager != null) _omniManager.ForceRefresh(); }
+                onRefresh: () => { if (_omniManager != null) _omniManager.ForceRefresh(); },
+                onReloadProfiles: ReloadDeviceProfiles
             );
+        }
+
+        /// <summary>
+        /// Synchronizes peripheral profiles Over-The-Air from GitHub asynchronously and displays a toast notification.
+        /// </summary>
+        public void ReloadDeviceProfiles()
+        {
+            if (_omniManager != null)
+            {
+                Logger.Log("Synchronizing peripheral profiles Over-The-Air from GitHub...");
+                _omniManager.UpdateProfilesFromGitHubAsync(result =>
+                {
+                    this.Dispatcher.Invoke(() =>
+                    {
+                        _latestDevices = null;
+                        RefreshWidgetState();
+
+                        if (result.Success)
+                        {
+                            Logger.Log(string.Format("Successfully updated {0} device profiles from GitHub.", result.UpdatedCount));
+                            var notif = new NotificationWindow("OmniHID Profiles", string.Format("Updated {0} device profile(s) from GitHub.", result.UpdatedCount));
+                            notif.Show();
+                        }
+                        else
+                        {
+                            Logger.Log(string.Format("GitHub OTA sync failed ({0}), fell back to local disk profiles.", result.ErrorMessage));
+                            var notif = new NotificationWindow("OmniHID Profiles", "Loaded local device profiles (offline mode).");
+                            notif.Show();
+                        }
+                    });
+                });
+            }
         }
 
         // ═══════════════════════════════════════════════════════════════════════════

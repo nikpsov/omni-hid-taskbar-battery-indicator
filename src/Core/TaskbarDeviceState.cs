@@ -86,6 +86,11 @@ namespace OmniHidTaskbar.Core
         /// </summary>
         public bool IsWired { get; set; }
 
+        /// <summary>
+        /// Gets or sets whether the peripheral profile belongs to verified profiles.
+        /// </summary>
+        public bool IsVerified { get; set; }
+
         // ═══════════════════════════════════════════════════════════════════════
         // Factory & Conversion Methods
         // ═══════════════════════════════════════════════════════════════════════
@@ -127,7 +132,8 @@ namespace OmniHidTaskbar.Core
                 TimeToFullMin = tel.TimeToFullMinutes,
                 TimeToEmptyMin = tel.TimeToEmptyMinutes,
                 StatusText = statusText,
-                IsWired = dev.IsWired
+                IsWired = dev.IsWired,
+                IsVerified = dev.IsVerified
             };
         }
 

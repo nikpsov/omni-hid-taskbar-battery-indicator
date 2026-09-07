@@ -1,6 +1,6 @@
 #define MyAppName "OmniHID Taskbar Battery Indicator"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.0"
+  #define MyAppVersion "0.2.0"
 #endif
 #define MyAppPublisher "nikpsov"
 #define MyAppURL "https://github.com/nikpsov/omni-hid-taskbar-battery-indicator"
@@ -29,8 +29,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [CustomMessages]
-english.RemoveSettingsPrompt=Do you want to delete all configuration and settings files (%APPDATA%\OmniHidTaskbar)?
-russian.RemoveSettingsPrompt=Удалить все файлы настроек и конфигурации программы (%APPDATA%\OmniHidTaskbar)?
+english.RemoveSettingsPrompt=Do you want to delete all configuration, settings, and profile files (%APPDATA%\OmniHid)?
+russian.RemoveSettingsPrompt=Удалить все файлы настроек, конфигурации и профилей устройств (%APPDATA%\OmniHid)?
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -40,6 +40,8 @@ Name: "startup"; Description: "Run at Windows startup"; GroupDescription: "Addit
 Source: "..\bin\OmniHidTaskbar.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\bin\OmniHidTaskbarDebug.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\bin\OmniHid.Core.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\vendor\omni-hid\devices\verified\*"; DestDir: "{userappdata}\OmniHid\devices\verified"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\vendor\omni-hid\devices\unverified\*"; DestDir: "{userappdata}\OmniHid\devices\unverified"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.ru.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
@@ -87,7 +89,7 @@ var
 begin
   if CurUninstallStep = usPostUninstall then
   begin
-    AppDataDir := ExpandConstant('{userappdata}\OmniHidTaskbar');
+    AppDataDir := ExpandConstant('{userappdata}\OmniHid');
     if DirExists(AppDataDir) then
     begin
       if (not UninstallSilent()) and (MsgBox(CustomMessage('RemoveSettingsPrompt'), mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES) then

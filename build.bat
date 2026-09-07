@@ -22,14 +22,10 @@ if "%CSC_PATH%"=="" (
 if not exist "bin" mkdir bin
 
 echo.
-echo [1/3] Compiling OmniHid.Core.dll from submodule (embedding device profiles)...
-set "RESOURCES="
-for /r "vendor\omni-hid\devices" %%f in (*.json) do (
-    set "RESOURCES=!RESOURCES! /resource:"%%f",%%~nxf"
-)
+echo [1/3] Compiling OmniHid.Core.dll from submodule...
 "%CSC_PATH%" /nologo /target:library /optimize+ /out:bin\OmniHid.Core.dll ^
-    /reference:System.Windows.Forms.dll ^
-    /recurse:vendor\omni-hid\src\OmniHid.Core\*.cs !RESOURCES!
+    /reference:System.Windows.Forms.dll,System.IO.Compression.dll,System.IO.Compression.FileSystem.dll ^
+    /recurse:vendor\omni-hid\src\OmniHid.Core\*.cs
 
 if errorlevel 1 (
     echo [ERROR] OmniHid.Core compilation failed.
@@ -59,8 +55,14 @@ if errorlevel 1 (
 if not exist "bin\settings.json" copy "settings.json" "bin\settings.json" >nul
 
 echo.
+echo Deploying local devices directory to bin\devices...
+if not exist "bin\devices" mkdir "bin\devices"
+xcopy /s /e /y /i "vendor\omni-hid\devices" "bin\devices" >nul
+
+echo.
 echo [SUCCESS] Build succeeded!
 echo   - bin\OmniHid.Core.dll
 echo   - bin\OmniHidTaskbar.exe (Portable Release)
 echo   - bin\OmniHidTaskbarDebug.exe (Debug Console)
+echo   - bin\devices\ (verified and unverified)
 exit /b 0
