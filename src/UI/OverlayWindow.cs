@@ -154,10 +154,12 @@ namespace OmniHidTaskbar.UI
             Content = _containerBorder;
 
             // Fluent hover & pressed states matching Windows 11 taskbar native system tray buttons
-            _containerBorder.MouseEnter += (s, e) => ApplyContainerBackground(isHovered: true, isPressed: Mouse.LeftButton == MouseButtonState.Pressed);
-            _containerBorder.MouseLeave += (s, e) => { if (!this.IsMouseOver) ApplyContainerBackground(isHovered: false, isPressed: false); };
             this.MouseEnter += (s, e) => ApplyContainerBackground(isHovered: true, isPressed: Mouse.LeftButton == MouseButtonState.Pressed);
-            this.MouseLeave += (s, e) => ApplyContainerBackground(isHovered: false, isPressed: false);
+            this.MouseLeave += (s, e) =>
+            {
+                ApplyContainerBackground(isHovered: false, isPressed: false);
+                ScheduleHoverExitCleanup();
+            };
             this.PreviewMouseLeftButtonDown += (s, e) => ApplyContainerBackground(isHovered: true, isPressed: true);
             this.PreviewMouseLeftButtonUp += (s, e) => ApplyContainerBackground(isHovered: this.IsMouseOver, isPressed: false);
 
@@ -201,10 +203,9 @@ namespace OmniHidTaskbar.UI
                 SetupHooks();
                 UpdatePosition();
 
-                // Relaxed background heartbeat timer (2000ms at Background priority) for geometry verification.
-                // Win32 hooks (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND, EVENT_OBJECT_LOCATIONCHANGE)
-                // handle instantaneous real-time window, taskbar, and Alt+Tab updates.
-                _positionTimer = new DispatcherTimer(DispatcherPriority.Background, this.Dispatcher) { Interval = TimeSpan.FromMilliseconds(2000) };
+                // Active heartbeat timer (300ms at Background priority) for geometry and fullscreen verification.
+                // Pure Win32 calls take <1 microsecond with zero heap allocations.
+                _positionTimer = new DispatcherTimer(DispatcherPriority.Background, this.Dispatcher) { Interval = TimeSpan.FromMilliseconds(300) };
                 _positionTimer.Tick += (ts, te) => UpdatePosition();
                 _positionTimer.Start();
 
@@ -225,6 +226,7 @@ namespace OmniHidTaskbar.UI
             this.Closed += (s, e) =>
             {
                 Microsoft.Win32.SystemEvents.SessionSwitch -= OnSessionSwitch;
+                if (_hoverExitTrimTimer != null) { _hoverExitTrimTimer.Stop(); _hoverExitTrimTimer = null; }
                 if (_omniManager != null) { _omniManager.Dispose(); _omniManager = null; }
                 if (_positionTimer != null) _positionTimer.Stop();
                 if (_hwndSource != null)
@@ -276,19 +278,27 @@ namespace OmniHidTaskbar.UI
             return brush;
         }
 
+        private int _currentHoverState = -1;
+        private DispatcherTimer _hoverExitTrimTimer = null;
+
         /// <summary>
         /// Applies theme-accurate Windows 11 Fluent hover/pressed translucent pills to the container border.
+        /// Guards against redundant brush re-assignments and visual invalidations.
         /// </summary>
+        /// <param name="isHovered"><c>true</c> if mouse pointer is over the widget; otherwise <c>false</c>.</param>
+        /// <param name="isPressed"><c>true</c> if primary mouse button is pressed over the widget; otherwise <c>false</c>.</param>
         private void ApplyContainerBackground(bool isHovered, bool isPressed)
         {
+            int newState = isPressed ? 2 : (isHovered ? 1 : 0);
+            if (_currentHoverState == newState) return;
+            _currentHoverState = newState;
+
             bool isDark = !(_lastIsSystemLight.GetValueOrDefault(!IsDarkTheme));
-            if (!isHovered && !isPressed)
+            if (newState == 0)
             {
                 _containerBorder.Background = HitTestTransparentBrush;
-                return;
             }
-
-            if (isPressed)
+            else if (newState == 2)
             {
                 _containerBorder.Background = DwmHelper.GetTaskbarButtonPressedBrush(isDark);
             }
@@ -296,6 +306,31 @@ namespace OmniHidTaskbar.UI
             {
                 _containerBorder.Background = DwmHelper.GetTaskbarButtonHoverBrush(isDark);
             }
+        }
+
+        /// <summary>
+        /// Schedules a one-off delayed memory trimming pass after the mouse pointer leaves the widget.
+        /// Flushes any transient WPF input packets and compositing buffers back to the OS baseline.
+        /// </summary>
+        private void ScheduleHoverExitCleanup()
+        {
+            if (_hoverExitTrimTimer == null)
+            {
+                _hoverExitTrimTimer = new DispatcherTimer(DispatcherPriority.Background, this.Dispatcher)
+                {
+                    Interval = TimeSpan.FromMilliseconds(800)
+                };
+                _hoverExitTrimTimer.Tick += (s, e) =>
+                {
+                    _hoverExitTrimTimer.Stop();
+                    if (!this.IsMouseOver && (_flyout == null || !_flyout.IsVisible) && !TaskbarContextMenu.IsOpen)
+                    {
+                        TaskbarHelper.TrimProcessMemory();
+                    }
+                };
+            }
+            _hoverExitTrimTimer.Stop();
+            _hoverExitTrimTimer.Start();
         }
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -941,7 +976,7 @@ namespace OmniHidTaskbar.UI
                 if (threadId != 0)
                 {
                     _hTaskbarHook = TaskbarHelper.SetWinEventHook(
-                        TaskbarHelper.EVENT_OBJECT_LOCATIONCHANGE,
+                        TaskbarHelper.EVENT_OBJECT_SHOW,
                         TaskbarHelper.EVENT_OBJECT_LOCATIONCHANGE,
                         IntPtr.Zero,
                         _winEventProc,
@@ -1008,10 +1043,6 @@ namespace OmniHidTaskbar.UI
                 {
                     _omniManager.SetPollInterval(bgSec * 1000);
                 }
-                if (_positionTimer != null)
-                {
-                    _positionTimer.Interval = TimeSpan.FromMilliseconds(5000);
-                }
             }
             else
             {
@@ -1021,10 +1052,6 @@ namespace OmniHidTaskbar.UI
                 {
                     _omniManager.SetPollInterval(normalSec * 1000);
                     _omniManager.ForceRefresh();
-                }
-                if (_positionTimer != null)
-                {
-                    _positionTimer.Interval = TimeSpan.FromMilliseconds(2000);
                 }
                 UpdatePosition();
             }

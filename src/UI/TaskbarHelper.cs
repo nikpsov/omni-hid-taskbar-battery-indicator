@@ -97,6 +97,8 @@ namespace OmniHidTaskbar.UI
 
         public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
         public const uint EVENT_SYSTEM_MOVESIZEEND = 0x000B;
+        public const uint EVENT_OBJECT_SHOW = 0x8002;
+        public const uint EVENT_OBJECT_HIDE = 0x8003;
         public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
         public const uint WINEVENT_OUTOFCONTEXT = 0;
 
@@ -188,14 +190,11 @@ namespace OmniHidTaskbar.UI
 
         private static IntPtr _cachedDesktopHwnd = IntPtr.Zero;
         private static IntPtr _cachedShellHwnd = IntPtr.Zero;
-        private static IntPtr _lastFgWnd = IntPtr.Zero;
-        private static bool _lastFgResult = false;
-        private static int _lastFgTick = 0;
 
         /// <summary>
         /// Determines whether the active foreground window is running in true or borderless fullscreen mode
         /// (e.g. immersive 3D games, media players, F11 browser), indicating that the taskbar overlay should be concealed.
-        /// Caches static desktop/shell window handles and recent foreground status to eliminate P/Invoke allocations.
+        /// Caches static desktop/shell window handles to eliminate P/Invoke allocations, with instant zero-allocation geometric testing.
         /// </summary>
         /// <param name="ignoredHwnd1">First window handle to ignore (e.g., overlay window itself).</param>
         /// <param name="ignoredHwnd2">Second window handle to ignore (e.g., flyout window).</param>
@@ -208,67 +207,39 @@ namespace OmniHidTaskbar.UI
             if (fgWnd == ignoredHwnd1 || (ignoredHwnd2 != IntPtr.Zero && fgWnd == ignoredHwnd2))
                 return false;
 
-            int currentTick = Environment.TickCount;
-            if (fgWnd == _lastFgWnd && (currentTick - _lastFgTick) < 1000)
-            {
-                return _lastFgResult;
-            }
-
             if (!IsWindow(_cachedDesktopHwnd)) _cachedDesktopHwnd = FindWindow("Progman", null);
             if (!IsWindow(_cachedShellHwnd)) _cachedShellHwnd = FindWindow("WorkerW", null);
             if (!IsWindow(_cachedTaskbarHwnd)) _cachedTaskbarHwnd = FindWindow("Shell_TrayWnd", null);
 
             if (fgWnd == _cachedDesktopHwnd || fgWnd == _cachedShellHwnd || fgWnd == _cachedTaskbarHwnd)
-            {
-                _lastFgWnd = fgWnd;
-                _lastFgResult = false;
-                _lastFgTick = currentTick;
                 return false;
-            }
 
             // Check if taskbar itself is hidden (e.g. auto-hide or exclusive fullscreen)
             if (_cachedTaskbarHwnd != IntPtr.Zero && !IsWindowVisible(_cachedTaskbarHwnd))
             {
-                _lastFgWnd = fgWnd;
-                _lastFgResult = true;
-                _lastFgTick = currentTick;
                 return true;
             }
 
             RECT appBounds;
             if (!GetWindowRect(fgWnd, out appBounds))
-            {
-                _lastFgWnd = fgWnd;
-                _lastFgResult = false;
-                _lastFgTick = currentTick;
                 return false;
-            }
 
             IntPtr hMonitor = MonitorFromWindow(fgWnd, MONITOR_DEFAULTTONEAREST);
             if (hMonitor == IntPtr.Zero)
-            {
-                _lastFgWnd = fgWnd;
-                _lastFgResult = false;
-                _lastFgTick = currentTick;
                 return false;
-            }
 
             MONITORINFO mi = new MONITORINFO();
             mi.cbSize = Marshal.SizeOf(mi);
-            bool isFs = false;
             if (GetMonitorInfo(hMonitor, ref mi))
             {
-                // Fullscreen if foreground window covers or exceeds the monitor physical display
-                isFs = (appBounds.Left <= mi.rcMonitor.Left &&
-                        appBounds.Top <= mi.rcMonitor.Top &&
-                        appBounds.Right >= mi.rcMonitor.Right &&
-                        appBounds.Bottom >= mi.rcMonitor.Bottom);
+                // Fullscreen if foreground window covers or exceeds the monitor physical display (with 2px tolerance for DPI rounding)
+                return (appBounds.Left <= mi.rcMonitor.Left + 2 &&
+                        appBounds.Top <= mi.rcMonitor.Top + 2 &&
+                        appBounds.Right >= mi.rcMonitor.Right - 2 &&
+                        appBounds.Bottom >= mi.rcMonitor.Bottom - 2);
             }
 
-            _lastFgWnd = fgWnd;
-            _lastFgResult = isFs;
-            _lastFgTick = currentTick;
-            return isFs;
+            return false;
         }
 
         /// <summary>
