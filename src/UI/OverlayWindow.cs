@@ -58,7 +58,7 @@ namespace OmniHidTaskbar.UI
         private readonly List<TaskbarDeviceWidget> _widgetCache = new List<TaskbarDeviceWidget>();
         private readonly HashSet<string> _warnedLowBatteryDeviceIds = new HashSet<string>();
 
-        private OmniManager _omniManager;
+        private IOmniManager _omniManager;
         private string _lastRenderSignature = null;
         private string _lastTrayIconSignature = null;
         private readonly Dictionary<string, System.Drawing.Icon> _trayIconCache = new Dictionary<string, System.Drawing.Icon>(StringComparer.Ordinal);

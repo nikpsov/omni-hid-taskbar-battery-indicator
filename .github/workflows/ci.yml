@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -27,6 +27,14 @@ jobs:
       - name: Verify Output Binaries
         shell: pwsh
         run: |
-          Test-Path bin\OmniHidTaskbar.exe
-          Test-Path bin\OmniHidTaskbarDebug.exe
-          Test-Path bin\OmniHid.Core.dll
+          $binaries = @(
+            "bin\OmniHidTaskbar.exe",
+            "bin\OmniHidTaskbarDebug.exe",
+            "bin\OmniHid.Core.dll"
+          )
+          foreach ($bin in $binaries) {
+            if (-not (Test-Path $bin)) {
+              throw "Required binary not found: $bin"
+            }
+            Write-Host "Verified: $bin"
+          }

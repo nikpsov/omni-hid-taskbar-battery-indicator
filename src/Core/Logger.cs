@@ -15,7 +15,69 @@ namespace OmniHidTaskbar.Core
     public static class Logger
     {
         private static readonly object _logLock = new object();
-        private static readonly string LogFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log");
+        private static string _resolvedLogFilePath;
+
+        /// <summary>
+        /// Gets the resolved absolute path to <c>debug.log</c>, prioritizing the application directory
+        /// in portable mode or falling back to user <c>%APPDATA%\OmniHid</c> when installed in write-protected paths.
+        /// </summary>
+        public static string LogFilePath
+        {
+            get
+            {
+                if (_resolvedLogFilePath == null)
+                {
+                    _resolvedLogFilePath = ResolveLogFilePath();
+                }
+                return _resolvedLogFilePath;
+            }
+        }
+
+        private static string ResolveLogFilePath()
+        {
+            try
+            {
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                if (IsDirectoryWritable(baseDir))
+                {
+                    return Path.Combine(baseDir, "debug.log");
+                }
+            }
+            catch { }
+
+            try
+            {
+                string appDataFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "OmniHid");
+                if (!Directory.Exists(appDataFolder))
+                {
+                    Directory.CreateDirectory(appDataFolder);
+                }
+                return Path.Combine(appDataFolder, "debug.log");
+            }
+            catch
+            {
+                return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log");
+            }
+        }
+
+        /// <summary>
+        /// Probes whether a specific directory is writable under current user security permissions.
+        /// </summary>
+        public static bool IsDirectoryWritable(string directoryPath)
+        {
+            if (string.IsNullOrEmpty(directoryPath) || !Directory.Exists(directoryPath)) return false;
+            try
+            {
+                string testFile = Path.Combine(directoryPath, ".write_test_" + Guid.NewGuid().ToString("N"));
+                File.WriteAllText(testFile, "test");
+                File.Delete(testFile);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
         private const long MaxLogFileSizeBytes = 1024 * 1024; // 1 MB limit per log file
         private const int MaxLogFileBackups = 2; // Retain at most debug.log.1 and debug.log.2
 
@@ -45,7 +107,7 @@ namespace OmniHidTaskbar.Core
         // ═══════════════════════════════════════════════════════════════════════
 
         /// <summary>
-        /// Inspects command-line arguments, binary filename, and registry keys to decide whether debug logging is active.
+        /// Inspects command-line arguments and binary filename to decide whether debug logging is active.
         /// </summary>
         /// <returns><c>true</c> if debug output is requested; otherwise <c>false</c>.</returns>
         private static bool DetermineDebugLogging()
@@ -69,17 +131,6 @@ namespace OmniHidTaskbar.Core
                 string processName = AppDomain.CurrentDomain.FriendlyName;
                 if (!string.IsNullOrEmpty(processName) && processName.IndexOf("Debug", StringComparison.OrdinalIgnoreCase) >= 0)
                     return true;
-
-                // Check HKCU\Software\OmniHidTaskbar registry setting
-                using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\OmniHidTaskbar"))
-                {
-                    if (key != null)
-                    {
-                        object val = key.GetValue("EnableDebugLog");
-                        if (val != null && Convert.ToInt32(val) == 1)
-                            return true;
-                    }
-                }
             }
             catch { }
             return false;

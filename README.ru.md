@@ -85,7 +85,7 @@ build.bat
 | `HideWhenDisconnected` | `true` | Скрывать виджет, если все девайсы спят или выключены |
 | `RunOnStartup` | `false` | Автозапуск при входе в Windows |
 | `PollIntervalSeconds` | `15` | Интервал опроса устройств на рабочем столе (в секундах) |
-| `BackgroundPollIntervalSeconds` | `30` | Замедленный интервал опроса в полноэкранных играх и при блокировке |
+| `BackgroundPollIntervalSeconds` | `300` | Замедленный интервал опроса в полноэкранных играх и при блокировке |
 
 ---
 

@@ -521,14 +521,6 @@ namespace OmniHidTaskbar.UI
                 {
                     subText = string.Format("Approx. {0}h {1}m remaining", dev.TimeToEmptyMin / 60, dev.TimeToEmptyMin % 60);
                 }
-                else if (dev.Category == OmniHid.Core.Abstractions.DeviceCategory.Headset)
-                {
-                    double maxHours = GetModelMaxBatteryHours(dev.Name);
-                    double estimatedHours = maxHours * (dev.BatteryPercent / 100.0);
-                    int hours = (int)estimatedHours;
-                    int minutes = (int)((estimatedHours - hours) * 60);
-                    subText = string.Format("Approx. {0}h {1}m remaining", hours, minutes);
-                }
                 else
                 {
                     subText = !string.IsNullOrEmpty(dev.StatusText) ? dev.StatusText : "Wireless";
@@ -787,31 +779,6 @@ namespace OmniHidTaskbar.UI
             }
         }
 
-        // ═══════════════════════════════════════════════════════════════════════
-        // Hardware Battery Runtime Estimation
-        // ═══════════════════════════════════════════════════════════════════════
-
-        /// <summary>
-        /// Retrieves manufacturer rated battery endurance hours for known wireless headsets
-        /// when firmware protocol does not report exact minutes remaining.
-        /// </summary>
-        /// <param name="deviceName">Peripheral model name.</param>
-        /// <returns>Rated battery endurance in hours.</returns>
-        private static double GetModelMaxBatteryHours(string deviceName)
-        {
-            if (string.IsNullOrEmpty(deviceName)) return 50.0;
-            string lower = deviceName.ToLowerInvariant();
-            if (lower.Contains("pro x 2") || lower.Contains("0x0af7")) return 50.0;
-            if (lower.Contains("alpha wireless")) return 300.0;
-            if (lower.Contains("cloud 3") || lower.Contains("cloud iii")) return 120.0;
-            if (lower.Contains("cloud 2") || lower.Contains("cloud ii") || lower.Contains("flight")) return 30.0;
-            if (lower.Contains("nova 7")) return 38.0;
-            if (lower.Contains("nova 5")) return 60.0;
-            if (lower.Contains("nova pro")) return 22.0;
-            if (lower.Contains("g733")) return 29.0;
-            if (lower.Contains("g535")) return 33.0;
-            return 50.0;
-        }
 
         // ═══════════════════════════════════════════════════════════════════════
         // Theme & Visual Styling

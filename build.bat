@@ -24,7 +24,7 @@ if not exist "bin" mkdir bin
 echo.
 echo [1/3] Compiling OmniHid.Core.dll from submodule...
 "%CSC_PATH%" /nologo /target:library /optimize+ /out:bin\OmniHid.Core.dll ^
-    /reference:System.Windows.Forms.dll,System.IO.Compression.dll,System.IO.Compression.FileSystem.dll ^
+    /reference:System.IO.Compression.dll,System.IO.Compression.FileSystem.dll ^
     /recurse:vendor\omni-hid\src\OmniHid.Core\*.cs
 
 if errorlevel 1 (

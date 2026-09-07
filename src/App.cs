@@ -7,9 +7,9 @@ using OmniHidTaskbar.UI;
 
 [assembly: AssemblyTitle("OmniHID Taskbar Battery Indicator")]
 [assembly: AssemblyDescription("Universal Taskbar & Fluent Flyout Battery Monitor for Gaming Peripherals")]
-[assembly: AssemblyVersion("0.2.0.0")]
-[assembly: AssemblyFileVersion("0.2.0.0")]
-[assembly: AssemblyInformationalVersion("0.2.0")]
+[assembly: AssemblyVersion("0.2.1.0")]
+[assembly: AssemblyFileVersion("0.2.1.0")]
+[assembly: AssemblyInformationalVersion("0.2.1")]
 
 namespace OmniHidTaskbar
 {
@@ -40,7 +40,18 @@ namespace OmniHidTaskbar
                 Logger.Log("Fatal Application Crash: " + ex);
                 try
                 {
-                    File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log"), ex.ToString());
+                    string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                    string crashPath = Path.Combine(baseDir, "crash.log");
+                    if (!Logger.IsDirectoryWritable(baseDir))
+                    {
+                        string appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "OmniHid");
+                        if (!Directory.Exists(appData))
+                        {
+                            Directory.CreateDirectory(appData);
+                        }
+                        crashPath = Path.Combine(appData, "crash.log");
+                    }
+                    File.WriteAllText(crashPath, ex.ToString());
                 }
                 catch { }
             }

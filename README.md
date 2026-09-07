@@ -85,7 +85,7 @@ Right-click the widget or edit `settings.json`:
 | `HideWhenDisconnected` | `true` | Hide widget when all devices are sleeping or offline |
 | `RunOnStartup` | `false` | Start automatically with Windows |
 | `PollIntervalSeconds` | `15` | Polling interval in seconds on desktop |
-| `BackgroundPollIntervalSeconds` | `30` | Throttled polling interval in seconds in fullscreen games/lock screen |
+| `BackgroundPollIntervalSeconds` | `300` | Throttled polling interval in seconds in fullscreen games/lock screen |
 
 ---
 

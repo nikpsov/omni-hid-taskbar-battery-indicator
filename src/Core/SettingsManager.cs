@@ -203,7 +203,6 @@ namespace OmniHidTaskbar.Core
                 {
                     _activeSettingsFilePath = localPath;
                     Logger.Log("Settings loaded from portable program folder: " + localPath);
-                    EnsureSchemaMigrated(localPath, settings);
                     return settings;
                 }
             }
@@ -215,7 +214,6 @@ namespace OmniHidTaskbar.Core
                 {
                     _activeSettingsFilePath = appDataPath;
                     Logger.Log("Settings loaded from AppData folder: " + appDataPath);
-                    EnsureSchemaMigrated(appDataPath, settings);
                     return settings;
                 }
             }
@@ -230,26 +228,6 @@ namespace OmniHidTaskbar.Core
                     return settings;
                 }
             }
-
-            // 4. Fallback to Windows Registry (legacy migration)
-            try
-            {
-                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\OmniHidTaskbar"))
-                {
-                    if (key != null)
-                    {
-                        object ds = key.GetValue("DisplayStyle");
-                        if (ds is int) settings.DisplayStyle = (int)ds;
-
-                        object hwd = key.GetValue("HideWhenDisconnected");
-                        if (hwd is int) settings.HideWhenDisconnected = (int)hwd == 1;
-
-                        object pis = key.GetValue("PollInterval");
-                        if (pis is int) settings.PollIntervalSeconds = (int)pis;
-                    }
-                }
-            }
-            catch { }
 
             // Check RunOnStartup from Windows Run registry key
             try
@@ -310,31 +288,6 @@ namespace OmniHidTaskbar.Core
             {
                 Logger.Log(string.Format("Failed to parse settings from {0}: {1}", path, ex.Message));
                 return false;
-            }
-        }
-
-        /// <summary>
-        /// Inspects the active JSON file on disk to determine whether newly added schema fields
-        /// (such as <c>BackgroundPollIntervalSeconds</c>) are missing, and rewrites the file to include them
-        /// while preserving all existing user preferences.
-        /// </summary>
-        /// <param name="filePath">Target settings file path.</param>
-        /// <param name="settings">Populated settings instance.</param>
-        private void EnsureSchemaMigrated(string filePath, AppSettings settings)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return;
-                string json = File.ReadAllText(filePath, Encoding.UTF8);
-                if (json.IndexOf("BackgroundPollIntervalSeconds", StringComparison.OrdinalIgnoreCase) < 0)
-                {
-                    File.WriteAllText(filePath, SerializeToJson(settings), Encoding.UTF8);
-                    Logger.Log("Migrated settings schema with new configuration defaults at: " + filePath);
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Log("Settings schema migration warning: " + ex.Message);
             }
         }
 
