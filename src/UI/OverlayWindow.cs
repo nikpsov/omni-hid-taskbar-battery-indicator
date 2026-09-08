@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using OmniHidTaskbar.Core;
 using OmniHid.Core;
@@ -101,14 +102,19 @@ namespace OmniHidTaskbar.UI
         }
 
         /// <summary>
-        /// Gets the latest raw telemetry state snapshot for all enumerated peripheral devices in user-configured order.
+        /// Gets the current list of peripheral devices (mock devices if mock mode is active, otherwise physical devices).
         /// </summary>
-        public List<TaskbarDeviceState> LatestDevices { get { return SortDevicesByCustomOrder(_latestDevices); } }
+        public List<TaskbarDeviceState> ActiveDevices { get { return IsMockModeActive ? MockDevicesProvider.GetMockDevices() : _latestDevices; } }
+
+        /// <summary>
+        /// Gets the current list of peripheral devices sorted by custom order.
+        /// </summary>
+        public List<TaskbarDeviceState> LatestDevices { get { return SortDevicesByCustomOrder(ActiveDevices); } }
 
         /// <summary>
         /// Gets the filtered list of peripheral devices that are configured as visible by user settings in custom order.
         /// </summary>
-        public List<TaskbarDeviceState> VisibleDevices { get { return GetVisibleDevices(SortDevicesByCustomOrder(_latestDevices)); } }
+        public List<TaskbarDeviceState> VisibleDevices { get { return GetVisibleDevices(SortDevicesByCustomOrder(ActiveDevices)); } }
 
         // ═══════════════════════════════════════════════════════════════════════
         // Constructor & Initialization
@@ -169,7 +175,7 @@ namespace OmniHidTaskbar.UI
             this.MouseLeftButtonUp += (s, e) => ShowFlyout();
             this.MouseRightButtonUp += (s, e) => ShowContextMenu();
 
-            ApplyDevicesState(_latestDevices);
+            ApplyDevicesState(ActiveDevices);
 
             InitNotifyIcon();
 
@@ -435,7 +441,7 @@ namespace OmniHidTaskbar.UI
                         }
                     }
                 }
-                ApplyDevicesState(_latestDevices);
+                ApplyDevicesState(ActiveDevices);
             }));
         }
 
@@ -445,7 +451,48 @@ namespace OmniHidTaskbar.UI
         public void RefreshWidgetState()
         {
             LoadSettings();
-            ApplyDevicesState(_latestDevices);
+            ApplyDevicesState(ActiveDevices);
+        }
+
+        /// <summary>
+        /// Gets or sets whether simulated mock peripheral devices should be rendered for layout testing.
+        /// </summary>
+        public bool IsMockModeActive { get; set; }
+
+        /// <summary>
+        /// Toggles between physical hardware telemetry and simulated mock peripheral devices in debug mode.
+        /// </summary>
+        public void ToggleMockMode()
+        {
+            IsMockModeActive = !IsMockModeActive;
+            ApplyDevicesState(ActiveDevices);
+            if (_flyout != null && _flyout.IsVisible)
+            {
+                _flyout.UpdateData(VisibleDevices, force: true);
+            }
+        }
+
+        /// <summary>
+        /// Calculates the required taskbar overlay window width in DIPs based on active devices,
+        /// compact mode state, and whether individual devices are online or disconnected.
+        /// </summary>
+        private double ComputeOverlayWidth(List<TaskbarDeviceState> targetDevices)
+        {
+            if (targetDevices == null || targetDevices.Count == 0)
+            {
+                return 44;
+            }
+
+            int totalWidth = 16;
+            for (int i = 0; i < targetDevices.Count; i++)
+            {
+                var d = targetDevices[i];
+                bool isConn = d.IsConnected && d.BatteryPercent >= 0;
+                int slot = isConn ? (_isCompactMode ? 44 : (_displayStyle == 0 ? 58 : 46)) : (_isCompactMode ? 22 : 26);
+                int spacer = (i > 0) ? (_isCompactMode ? 5 : 8) : 0;
+                totalWidth += slot + spacer;
+            }
+            return Math.Max(50, totalWidth);
         }
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -489,7 +536,7 @@ namespace OmniHidTaskbar.UI
             {
                 SettingsManager.Instance.Current.DeviceOrder = new List<string>(newOrder);
                 SettingsManager.Instance.Save();
-                ApplyDevicesState(_latestDevices);
+                ApplyDevicesState(ActiveDevices);
             }
         }
 
@@ -535,7 +582,7 @@ namespace OmniHidTaskbar.UI
             }
 
             SettingsManager.Instance.Save();
-            ApplyDevicesState(_latestDevices);
+            ApplyDevicesState(ActiveDevices);
         }
 
         /// <summary>
@@ -616,11 +663,11 @@ namespace OmniHidTaskbar.UI
             }
 
             SettingsManager.Instance.Save();
-            ApplyDevicesState(_latestDevices);
+            ApplyDevicesState(ActiveDevices);
 
             if (_flyout != null && _flyout.IsVisible)
             {
-                _flyout.UpdateData(GetVisibleDevices(SortDevicesByCustomOrder(_latestDevices)));
+                _flyout.UpdateData(VisibleDevices);
             }
         }
 
@@ -629,21 +676,25 @@ namespace OmniHidTaskbar.UI
         // ═══════════════════════════════════════════════════════════════════════════
 
         /// <summary>
-        /// Rebuilds the visual layout of the overlay based on the provided list of device states,
-        /// handling multi-device spacing, offline placeholders, low-battery toast alerts, and flyout sync.
+        /// Evaluates telemetry differentials, manages taskbar button footprint, and reconciles WPF visual tree.
         /// </summary>
         /// <param name="devices">The latest snapshot of device states received from the telemetry manager.</param>
         private void ApplyDevicesState(List<TaskbarDeviceState> devices)
         {
             try
             {
+                if (IsMockModeActive)
+                {
+                    devices = MockDevicesProvider.GetMockDevices();
+                }
+
                 bool isLight = !IsDarkTheme;
                 var themeBrush = DwmHelper.GetPrimaryTextBrush(!isLight);
                 bool isTrayOnly = SettingsManager.Instance.Current.DisplayMode == 1;
 
                 var orderedDevices = SortDevicesByCustomOrder(devices);
                 var visibleDevices = GetVisibleDevices(orderedDevices);
-                var targetDevices = _hideWhenDisconnected
+                var targetDevices = (_hideWhenDisconnected && !IsMockModeActive)
                     ? visibleDevices.Where(d => d.IsConnected && d.BatteryPercent >= 0).ToList()
                     : visibleDevices;
 
@@ -722,9 +773,8 @@ namespace OmniHidTaskbar.UI
                         }
                     }
 
-                    // Compute dynamic overlay width based on item count and compact/full state
-                    int itemSlotWidth = _isCompactMode ? 44 : (_displayStyle == 0 ? 58 : 46);
-                    this.Width = Math.Max(50, targetDevices.Count * itemSlotWidth + 16);
+                    // Compute dynamic overlay width based on item count and compact/full/disconnected state
+                    this.Width = ComputeOverlayWidth(targetDevices);
                     this.Visibility = (isTrayOnly || isFullscreen)
                         ? Visibility.Hidden : Visibility.Visible;
 
@@ -736,6 +786,22 @@ namespace OmniHidTaskbar.UI
                     }
                     UpdatePosition();
                     return;
+                }
+
+                // Record previous positions of existing widgets for smooth slide reordering
+                var prevPositions = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < _mainStack.Children.Count; i++)
+                {
+                    var w = _mainStack.Children[i] as TaskbarDeviceWidget;
+                    if (w != null && !string.IsNullOrEmpty(w.DeviceId))
+                    {
+                        try
+                        {
+                            Point pt = w.TranslatePoint(new Point(0, 0), _mainStack);
+                            prevPositions[w.DeviceId] = pt.X;
+                        }
+                        catch { }
+                    }
                 }
 
                 _lastRenderSignature = currentSignature;
@@ -777,14 +843,53 @@ namespace OmniHidTaskbar.UI
                         }
                     }
 
-                    // Compute dynamic overlay width based on item count and compact/full state
-                    int itemSlotWidth = _isCompactMode ? 44 : (_displayStyle == 0 ? 58 : 46);
-                    this.Width = Math.Max(50, targetDevices.Count * itemSlotWidth + 16);
+                    // Compute dynamic overlay width based on item count and compact/full/disconnected state
+                    this.Width = ComputeOverlayWidth(targetDevices);
                     this.Visibility = (isTrayOnly || isFullscreen)
                         ? Visibility.Hidden : Visibility.Visible;
 
                     UpdateTrayTooltip(targetDevices);
                     UpdateDynamicTrayIcon(targetDevices, isLight);
+
+                    // Animate widgets smoothly from their previous positions
+                    if (prevPositions.Count > 0)
+                    {
+                        _mainStack.UpdateLayout();
+                        for (int i = 0; i < _mainStack.Children.Count; i++)
+                        {
+                            var w = _mainStack.Children[i] as TaskbarDeviceWidget;
+                            if (w != null && !string.IsNullOrEmpty(w.DeviceId))
+                            {
+                                double prevX;
+                                if (prevPositions.TryGetValue(w.DeviceId, out prevX))
+                                {
+                                    try
+                                    {
+                                        Point newPt = w.TranslatePoint(new Point(0, 0), _mainStack);
+                                        double deltaX = prevX - newPt.X;
+                                        if (Math.Abs(deltaX) > 1.0)
+                                        {
+                                            var trans = w.RenderTransform as TranslateTransform;
+                                            if (trans == null)
+                                            {
+                                                trans = new TranslateTransform();
+                                                w.RenderTransform = trans;
+                                            }
+                                            var anim = new DoubleAnimation
+                                            {
+                                                From = deltaX,
+                                                To = 0,
+                                                Duration = TimeSpan.FromMilliseconds(240),
+                                                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                                            };
+                                            trans.BeginAnimation(TranslateTransform.XProperty, anim);
+                                        }
+                                    }
+                                    catch { }
+                                }
+                            }
+                        }
+                    }
                 }
                 else
                 {
@@ -811,9 +916,9 @@ namespace OmniHidTaskbar.UI
 
                     var crossText = new TextBlock
                     {
-                        Text = "\u2715",
-                        FontFamily = CrossFont,
-                        FontSize = 8.5,
+                        Text = "\uEA83", // Segoe Fluent Icons StatusError
+                        FontFamily = IconFont,
+                        FontSize = 9,
                         FontWeight = FontWeights.Bold,
                         Foreground = DisconnectedCrossBrush,
                         HorizontalAlignment = HorizontalAlignment.Right,
@@ -858,7 +963,9 @@ namespace OmniHidTaskbar.UI
             public int CurrentDisplayStyle { get; private set; }
             public bool CurrentIsCompactMode { get; private set; }
 
+            private readonly Grid _deviceIconGrid;
             private readonly TextBlock _iconBlock;
+            private readonly TextBlock _statusErrorBlock;
             private TextBlock _battText;
             private TextBlock _boltBlock;
             private Grid _battIconGrid;
@@ -871,63 +978,98 @@ namespace OmniHidTaskbar.UI
                 CurrentDisplayStyle = displayStyle;
                 CurrentIsCompactMode = isCompact;
 
+                bool isConn = dev.IsConnected && dev.BatteryPercent >= 0;
+
+                _deviceIconGrid = new Grid
+                {
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, isConn ? (isCompact ? 1 : 3) : 0, 0)
+                };
+
                 _iconBlock = new TextBlock
                 {
                     Text = !string.IsNullOrEmpty(dev.IconGlyph) ? dev.IconGlyph : dev.GetDefaultIconGlyph(),
                     FontFamily = IconFont,
                     FontSize = isCompact ? 13.5 : 15,
                     Foreground = themeBrush,
+                    Opacity = isConn ? 1.0 : 0.65,
                     VerticalAlignment = VerticalAlignment.Center,
-                    Margin = new Thickness(0, 0, isCompact ? 1 : 3, 0)
+                    HorizontalAlignment = HorizontalAlignment.Center
                 };
-                Children.Add(_iconBlock);
+                _deviceIconGrid.Children.Add(_iconBlock);
 
-                if (displayStyle == 0)
+                // Disconnected status error cross (Segoe Fluent Icons \uEA83 - StatusError)
+                _statusErrorBlock = new TextBlock
                 {
-                    string percentText = (dev.IsConnected && dev.BatteryPercent >= 0) ? (dev.BatteryPercent + "%") : "--%";
-                    _battText = new TextBlock
-                    {
-                        FontFamily = TextFont,
-                        FontSize = isCompact ? 11.5 : 12.5,
-                        FontWeight = FontWeights.Normal,
-                        Foreground = themeBrush,
-                        VerticalAlignment = VerticalAlignment.Center,
-                        Text = percentText,
-                        Margin = new Thickness(0, 0, 2, 0)
-                    };
-                    Children.Add(_battText);
+                    Text = "\uEA83",
+                    FontFamily = IconFont,
+                    FontSize = isCompact ? 8 : 9,
+                    FontWeight = FontWeights.Bold,
+                    Foreground = CriticalRedBrush,
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    Margin = new Thickness(0, 0, -3, -2),
+                    Visibility = isConn ? Visibility.Collapsed : Visibility.Visible
+                };
+                _deviceIconGrid.Children.Add(_statusErrorBlock);
 
-                    _boltBlock = new TextBlock
-                    {
-                        Text = "\uE945",
-                        FontFamily = IconFont,
-                        FontSize = isCompact ? 10 : 11,
-                        FontWeight = FontWeights.Bold,
-                        Foreground = ChargingGreenBrush,
-                        VerticalAlignment = VerticalAlignment.Center,
-                        Margin = new Thickness(0, 0, 1, 0),
-                        Visibility = (dev.IsConnected && dev.IsCharging) ? Visibility.Visible : Visibility.Collapsed
-                    };
-                    Children.Add(_boltBlock);
-                }
-                else
+                Children.Add(_deviceIconGrid);
+
+                // Percentage mode text and charging bolt
+                string percentText = isConn ? (dev.BatteryPercent + "%") : string.Empty;
+                _battText = new TextBlock
                 {
-                    _battIconGrid = new Grid
-                    {
-                        VerticalAlignment = VerticalAlignment.Center,
-                        Margin = new Thickness(0, 0, 2, 0)
-                    };
-                    Children.Add(_battIconGrid);
+                    FontFamily = TextFont,
+                    FontSize = isCompact ? 11.5 : 12.5,
+                    FontWeight = FontWeights.Normal,
+                    Foreground = themeBrush,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Text = percentText,
+                    Margin = new Thickness(0, 0, 2, 0),
+                    Visibility = (displayStyle == 0 && isConn) ? Visibility.Visible : Visibility.Collapsed
+                };
+                Children.Add(_battText);
+
+                _boltBlock = new TextBlock
+                {
+                    Text = "\uE945",
+                    FontFamily = IconFont,
+                    FontSize = isCompact ? 10 : 11,
+                    FontWeight = FontWeights.Bold,
+                    Foreground = ChargingGreenBrush,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, 1, 0),
+                    Visibility = (displayStyle == 0 && isConn && dev.IsCharging) ? Visibility.Visible : Visibility.Collapsed
+                };
+                Children.Add(_boltBlock);
+
+                // Battery gauge icon mode
+                _battIconGrid = new Grid
+                {
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, 2, 0),
+                    Visibility = (displayStyle != 0 && isConn) ? Visibility.Visible : Visibility.Collapsed
+                };
+                Children.Add(_battIconGrid);
+
+                if (displayStyle != 0 && isConn)
+                {
                     UpdateBatteryIconGlyphs(dev, themeBrush);
                 }
 
-                Opacity = (dev.IsConnected && dev.BatteryPercent >= 0) ? 1.0 : 0.65;
+                Opacity = 1.0;
             }
 
             public void Update(TaskbarDeviceState dev, Brush themeBrush, bool isLight, int displayStyle, bool isCompact)
             {
                 DeviceId = dev.Id;
-                Opacity = (dev.IsConnected && dev.BatteryPercent >= 0) ? 1.0 : 0.65;
+                CurrentDisplayStyle = displayStyle;
+                CurrentIsCompactMode = isCompact;
+                bool isConn = dev.IsConnected && dev.BatteryPercent >= 0;
+
+                _iconBlock.Opacity = isConn ? 1.0 : 0.65;
+                _statusErrorBlock.Visibility = isConn ? Visibility.Collapsed : Visibility.Visible;
+                _deviceIconGrid.Margin = new Thickness(0, 0, isConn ? (isCompact ? 1 : 3) : 0, 0);
 
                 string glyph = !string.IsNullOrEmpty(dev.IconGlyph) ? dev.IconGlyph : dev.GetDefaultIconGlyph();
                 if (!string.Equals(_iconBlock.Text, glyph, StringComparison.Ordinal))
@@ -936,27 +1078,45 @@ namespace OmniHidTaskbar.UI
                 }
                 _iconBlock.Foreground = themeBrush;
 
-                if (displayStyle == 0 && _battText != null)
+                if (displayStyle == 0)
                 {
-                    string percentText = (dev.IsConnected && dev.BatteryPercent >= 0) ? (dev.BatteryPercent + "%") : "--%";
-                    if (!string.Equals(_battText.Text, percentText, StringComparison.Ordinal))
-                    {
-                        _battText.Text = percentText;
-                    }
-                    _battText.Foreground = themeBrush;
+                    if (_battIconGrid != null) _battIconGrid.Visibility = Visibility.Collapsed;
 
-                    if (_boltBlock != null)
+                    if (isConn && _battText != null)
                     {
-                        var boltVis = (dev.IsConnected && dev.IsCharging) ? Visibility.Visible : Visibility.Collapsed;
-                        if (_boltBlock.Visibility != boltVis)
+                        string percentText = dev.BatteryPercent + "%";
+                        if (!string.Equals(_battText.Text, percentText, StringComparison.Ordinal))
                         {
-                            _boltBlock.Visibility = boltVis;
+                            _battText.Text = percentText;
+                        }
+                        _battText.Foreground = themeBrush;
+                        _battText.Visibility = Visibility.Visible;
+
+                        if (_boltBlock != null)
+                        {
+                            _boltBlock.Visibility = dev.IsCharging ? Visibility.Visible : Visibility.Collapsed;
                         }
                     }
+                    else
+                    {
+                        if (_battText != null) _battText.Visibility = Visibility.Collapsed;
+                        if (_boltBlock != null) _boltBlock.Visibility = Visibility.Collapsed;
+                    }
                 }
-                else if (displayStyle != 0 && _battIconGrid != null)
+                else
                 {
-                    UpdateBatteryIconGlyphs(dev, themeBrush);
+                    if (_battText != null) _battText.Visibility = Visibility.Collapsed;
+                    if (_boltBlock != null) _boltBlock.Visibility = Visibility.Collapsed;
+
+                    if (isConn && _battIconGrid != null)
+                    {
+                        _battIconGrid.Visibility = Visibility.Visible;
+                        UpdateBatteryIconGlyphs(dev, themeBrush);
+                    }
+                    else if (_battIconGrid != null)
+                    {
+                        _battIconGrid.Visibility = Visibility.Collapsed;
+                    }
                 }
             }
 
@@ -965,59 +1125,49 @@ namespace OmniHidTaskbar.UI
                 _battIconGrid.Children.Clear();
                 if (!dev.IsConnected || dev.BatteryPercent < 0)
                 {
-                    var disconnectedGlyph = new TextBlock
+                    return;
+                }
+
+                int levelIndex = (int)Math.Round(dev.BatteryPercent / 10.0);
+                if (levelIndex < 0) levelIndex = 0;
+                if (levelIndex > 10) levelIndex = 10;
+
+                bool isColored = dev.IsCharging || dev.BatteryPercent <= 20;
+
+                if (isColored)
+                {
+                    char fillChar = dev.IsCharging ? (char)(0xEBAB + levelIndex) : (char)(0xEBA0 + levelIndex);
+                    var fill = new TextBlock
+                    {
+                        FontFamily = IconFont,
+                        FontSize = 16,
+                        Foreground = dev.IsCharging ? ChargingGreenBrush : CriticalRedBrush,
+                        Text = fillChar.ToString(),
+                        VerticalAlignment = VerticalAlignment.Center
+                    };
+                    _battIconGrid.Children.Add(fill);
+
+                    var outline = new TextBlock
                     {
                         FontFamily = IconFont,
                         FontSize = 16,
                         Foreground = themeBrush,
-                        Text = "\uEBA0", // Empty battery frame
+                        Text = dev.IsCharging ? "\uEBAB" : "\uEBA0",
                         VerticalAlignment = VerticalAlignment.Center
                     };
-                    _battIconGrid.Children.Add(disconnectedGlyph);
+                    _battIconGrid.Children.Add(outline);
                 }
                 else
                 {
-                    int levelIndex = (int)Math.Round(dev.BatteryPercent / 10.0);
-                    if (levelIndex < 0) levelIndex = 0;
-                    if (levelIndex > 10) levelIndex = 10;
-
-                    bool isColored = dev.IsCharging || dev.BatteryPercent <= 20;
-
-                    if (isColored)
+                    var normalGlyph = new TextBlock
                     {
-                        char fillChar = dev.IsCharging ? (char)(0xEBAB + levelIndex) : (char)(0xEBA0 + levelIndex);
-                        var fill = new TextBlock
-                        {
-                            FontFamily = IconFont,
-                            FontSize = 16,
-                            Foreground = dev.IsCharging ? ChargingGreenBrush : CriticalRedBrush,
-                            Text = fillChar.ToString(),
-                            VerticalAlignment = VerticalAlignment.Center
-                        };
-                        _battIconGrid.Children.Add(fill);
-
-                        var outline = new TextBlock
-                        {
-                            FontFamily = IconFont,
-                            FontSize = 16,
-                            Foreground = themeBrush,
-                            Text = dev.IsCharging ? "\uEBAB" : "\uEBA0",
-                            VerticalAlignment = VerticalAlignment.Center
-                        };
-                        _battIconGrid.Children.Add(outline);
-                    }
-                    else
-                    {
-                        var normalGlyph = new TextBlock
-                        {
-                            FontFamily = IconFont,
-                            FontSize = 16,
-                            Foreground = themeBrush,
-                            Text = ((char)(0xEBA0 + levelIndex)).ToString(),
-                            VerticalAlignment = VerticalAlignment.Center
-                        };
-                        _battIconGrid.Children.Add(normalGlyph);
-                    }
+                        FontFamily = IconFont,
+                        FontSize = 16,
+                        Foreground = themeBrush,
+                        Text = ((char)(0xEBA0 + levelIndex)).ToString(),
+                        VerticalAlignment = VerticalAlignment.Center
+                    };
+                    _battIconGrid.Children.Add(normalGlyph);
                 }
             }
         }
@@ -1048,7 +1198,7 @@ namespace OmniHidTaskbar.UI
         /// </summary>
         public void ShowFlyout()
         {
-            var visibleDevices = GetVisibleDevices(SortDevicesByCustomOrder(_latestDevices));
+            var visibleDevices = VisibleDevices;
             if (_flyout == null)
             {
                 _flyout = new FlyoutWindow(this, visibleDevices);
@@ -1092,9 +1242,20 @@ namespace OmniHidTaskbar.UI
                 owner: this,
                 fromTray: fromTray,
                 isDark: IsDarkTheme,
-                devicesList: _allKnownDevices.Values.ToList(),
+                devicesList: (IsMockModeActive ? MockDevicesProvider.GetMockDevices() : _allKnownDevices.Values.ToList()),
                 onOpenFlyout: ShowFlyout,
-                onRefresh: () => { if (_omniManager != null) _omniManager.ForceRefresh(); },
+                onRefresh: () =>
+                {
+                    ApplyDevicesState(ActiveDevices);
+                    if (_flyout != null)
+                    {
+                        _flyout.UpdateData(VisibleDevices, force: true);
+                    }
+                    if (_omniManager != null)
+                    {
+                        _omniManager.ForceRefresh();
+                    }
+                },
                 onReloadProfiles: ReloadDeviceProfiles
             );
         }
@@ -1402,14 +1563,14 @@ namespace OmniHidTaskbar.UI
                                 DwmHelper.SetDarkMode(hwnd, !isLight);
                             }
 
-                            UpdateDynamicTrayIcon(_latestDevices, isLight);
+                            UpdateDynamicTrayIcon(ActiveDevices, isLight);
 
                             if (_flyout != null && _flyout.IsVisible)
                             {
                                 _flyout.UpdateTheme(!isLight);
                             }
 
-                            ApplyDevicesState(_latestDevices);
+                            ApplyDevicesState(ActiveDevices);
                         }
                     }
                 }

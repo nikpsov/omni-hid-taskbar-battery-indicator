@@ -118,6 +118,20 @@ namespace OmniHidTaskbar.Core
                 SettingsManager.Instance.Current.CustomDeviceNames.TryGetValue(dev.Id, out customName);
             }
 
+            int timeToFull = tel.TimeToFullMinutes;
+            if (timeToFull <= 0 && tel.IsCharging && level >= 0 && level < 100)
+            {
+                // Typical peripheral USB charging profile: ~120 min for 0..100% cycle
+                timeToFull = Math.Max(1, (int)Math.Round(((100 - level) / 100.0) * 120.0));
+            }
+
+            int timeToEmpty = tel.TimeToEmptyMinutes;
+            if (timeToEmpty <= 0 && isOnline && !dev.IsWired && !tel.IsCharging && level > 0)
+            {
+                // Fallback runtime estimate for wireless peripheral: default 60h rated battery life
+                timeToEmpty = (int)Math.Round((level / 100.0) * 60.0 * 60.0);
+            }
+
             return new TaskbarDeviceState
             {
                 Id = dev.Id,
@@ -129,8 +143,8 @@ namespace OmniHidTaskbar.Core
                 BatteryPercent = level,
                 IsCharging = tel.IsCharging,
                 VoltageMv = tel.VoltageMv,
-                TimeToFullMin = tel.TimeToFullMinutes,
-                TimeToEmptyMin = tel.TimeToEmptyMinutes,
+                TimeToFullMin = timeToFull,
+                TimeToEmptyMin = timeToEmpty,
                 StatusText = statusText,
                 IsWired = dev.IsWired,
                 IsVerified = dev.IsVerified

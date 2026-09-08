@@ -43,6 +43,29 @@ namespace OmniHidTaskbar.UI
         }
 
         /// <summary>
+        /// Gets whether the current process is the debug executable or compiled with debug logging.
+        /// </summary>
+        public static bool IsDebugExecutable
+        {
+            get
+            {
+#if DEBUG_LOG
+                return true;
+#else
+                try
+                {
+                    string exeName = System.Diagnostics.Process.GetCurrentProcess().ProcessName;
+                    return exeName.IndexOf("Debug", StringComparison.OrdinalIgnoreCase) >= 0;
+                }
+                catch
+                {
+                    return false;
+                }
+#endif
+            }
+        }
+
+        /// <summary>
         /// Retrieves a cached <see cref="ContextMenu"/> style for dark or light theme.
         /// </summary>
         public static Style GetContextMenuStyle(bool isDark)
@@ -500,6 +523,16 @@ namespace OmniHidTaskbar.UI
             menu.Items.Add(startupItem);
 
             menu.Items.Add(CreateStyledSeparator(isDark));
+
+            if (IsDebugExecutable)
+            {
+                var mockItem = CreateStyledMenuItem("Mock Devices (Test UI)", itemStyle, true, owner.IsMockModeActive);
+                mockItem.Click += (s, e) =>
+                {
+                    owner.ToggleMockMode();
+                };
+                menu.Items.Add(mockItem);
+            }
 
             // Force refresh action
             var refreshItem = CreateStyledMenuItem("Refresh Device Info", itemStyle);
